@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Token Inspector</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <span class="brand">Token Inspector</span>
+    <div class="nav-links">
+      <a href="#" data-view="overview" class="nav-link active">Overview</a>
+      <a href="#" data-view="projects" class="nav-link">Projects</a>
+      <a href="#" data-view="models" class="nav-link">Models</a>
+      <a href="#" data-view="complexity" class="nav-link">Complexity</a>
+      <a href="#" data-view="settings" class="nav-link">Settings</a>
+    </div>
+  </nav>
+
+  <main class="container">
+
+    <!-- OVERVIEW -->
+    <section id="view-overview" class="view">
+      <div class="toolbar">
+        <h2>Overview</h2>
+        <div class="days-picker">
+          <button class="day-btn active" data-days="7">7d</button>
+          <button class="day-btn" data-days="30">30d</button>
+          <button class="day-btn" data-days="90">90d</button>
+        </div>
+      </div>
+      <div class="stat-cards" id="overview-cards">
+        <div class="card"><div class="card-label">Total Events</div><div class="card-value" id="stat-events">—</div></div>
+        <div class="card"><div class="card-label">Total Tokens</div><div class="card-value" id="stat-tokens">—</div></div>
+        <div class="card"><div class="card-label">Total Cost (USD)</div><div class="card-value" id="stat-cost">—</div></div>
+        <div class="card"><div class="card-label">Active Projects</div><div class="card-value" id="stat-projects">—</div></div>
+      </div>
+      <div class="charts-row">
+        <div class="chart-box wide"><canvas id="chart-timeseries"></canvas></div>
+        <div class="chart-box"><canvas id="chart-top-models"></canvas></div>
+      </div>
+      <h3>Projects Breakdown</h3>
+      <div class="table-wrap">
+        <table id="table-projects">
+          <thead><tr><th>Project</th><th>Events</th><th>Tokens</th><th>Cost (USD)</th><th>Avg Latency (ms)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- PROJECTS -->
+    <section id="view-projects" class="view hidden">
+      <div class="toolbar">
+        <h2>Projects</h2>
+        <select id="project-select"><option value="">Select project…</option></select>
+      </div>
+      <div class="charts-row">
+        <div class="chart-box wide"><canvas id="chart-proj-timeseries"></canvas></div>
+        <div class="chart-box half"><canvas id="chart-proj-roles"></canvas></div>
+        <div class="chart-box half"><canvas id="chart-proj-models"></canvas></div>
+      </div>
+      <h3>Event Log</h3>
+      <div class="toolbar">
+        <select id="proj-status-filter">
+          <option value="">All statuses</option>
+          <option value="success">success</option>
+          <option value="error">error</option>
+          <option value="timeout">timeout</option>
+        </select>
+        <div class="pagination">
+          <button id="proj-prev">←</button>
+          <span id="proj-page-info">1</span>
+          <button id="proj-next">→</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="table-proj-events">
+          <thead><tr><th>Time</th><th>Model</th><th>Role</th><th>Prompt</th><th>Completion</th><th>Cost</th><th>Latency</th><th>Status</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- MODELS -->
+    <section id="view-models" class="view hidden">
+      <h2>Models</h2>
+      <div class="chart-box" style="max-width:700px; margin-bottom:24px;"><canvas id="chart-model-latency"></canvas></div>
+      <div class="table-wrap">
+        <table id="table-models">
+          <thead><tr><th>Model</th><th>Events</th><th>Avg Prompt</th><th>Avg Completion</th><th>Avg Latency (ms)</th><th>Total Cost</th><th>Cost/1K tokens</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- COMPLEXITY -->
+    <section id="view-complexity" class="view hidden">
+      <div class="toolbar">
+        <h2>Complexity Analytics</h2>
+      </div>
+      <h3>Avg Cost by Complexity Tier</h3>
+      <div class="chart-box" style="max-width:600px; margin-bottom:24px;">
+        <canvas id="chart-complexity"></canvas>
+      </div>
+      <h3>Routing Recommendations</h3>
+      <p id="complexity-no-recs" class="hidden" style="color:#8892a4;">No recommendations yet — need ≥3 events per (role, complexity, model) bucket.</p>
+      <div class="table-wrap">
+        <table id="table-recs">
+          <thead><tr><th>Role</th><th>Complexity</th><th>Current Model</th><th>Recommended Model</th><th>Est. Savings</th><th>Data Points</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view hidden">
+      <h2>Pricing Rules</h2>
+      <div class="info-banner">Models with no pricing rule will show <code>null</code> cost. Prices are USD per 1M tokens.</div>
+      <form id="pricing-add-form" class="add-form">
+        <input id="new-model" placeholder="Model name (e.g. openai/gpt-4o)" required />
+        <input id="new-input-price" type="number" step="any" placeholder="Input $/1M" required />
+        <input id="new-output-price" type="number" step="any" placeholder="Output $/1M" required />
+        <button type="submit">Add / Update</button>
+      </form>
+      <div class="table-wrap">
+        <table id="table-pricing">
+          <thead><tr><th>Model</th><th>Input $/1M</th><th>Output $/1M</th><th>Updated</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

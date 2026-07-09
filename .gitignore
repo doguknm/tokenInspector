@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment
+.env
+
+# Generated database (recreated on first run)
+token_inspector.db
+
+# OS
+.DS_Store
+Thumbs.db
