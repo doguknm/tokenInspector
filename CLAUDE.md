@@ -2,6 +2,10 @@
 
 Guidance for Claude Code and other AI coding assistants when working in this repository.
 
+## AI Tools
+
+NOTEBOOKLM_NOTEBOOK_ID: 873a6470-05c2-40e1-be01-54b697f283aa
+
 ## Project Overview
 
 A standalone local analytics service that collects token usage events from any connected project via HTTP POST and stores them in a SQLite database. A vanilla JS dashboard visualizes cross-project token consumption, cost estimates, and LLM latency. Connected projects push one event per LLM call; the inspector calculates cost at ingest time from a user-maintained pricing table.
