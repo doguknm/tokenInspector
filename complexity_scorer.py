@@ -18,6 +18,8 @@ Respond with ONLY valid JSON: {"complexity": N} where N is 1, 2, 3, 4, or 5."""
 
 
 async def score_complexity(event_id: str, prompt_text: str) -> None:
+    if os.environ.get("STORE_RAW_PROMPTS", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
     model = os.environ.get("COMPLEXITY_SCORER_MODEL", "claude-haiku-4-5-20251001")
     api_key = os.environ.get("COMPLEXITY_SCORER_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -42,7 +44,7 @@ async def score_complexity(event_id: str, prompt_text: str) -> None:
             log.warning("[SCORER    ] Complexity value invalid: %r", complexity)
             return
         async with AsyncSessionLocal() as session:
-            await session.exec(
+            await session.execute(
                 text("UPDATE token_events SET complexity = :val WHERE id = :id").bindparams(
                     val=complexity, id=event_id
                 )

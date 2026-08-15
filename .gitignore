@@ -9,6 +9,11 @@ venv/
 
 # Generated database (recreated on first run)
 token_inspector.db
+*.db.bak-*
+*.pre-migration-bak
+.pytest_cache/
+.coverage
+htmlcov/
 
 # OS
 .DS_Store

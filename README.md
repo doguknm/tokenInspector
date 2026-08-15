@@ -27,21 +27,32 @@ Open http://localhost:8100
 | Complexity | Avg cost by complexity tier (C1–C5), routing recommendations table |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
 
-## Connecting a Project
+## Connecting Hermes or any other project
 
-Add this helper to any project, call it after each LLM response:
+Use the helper below or adapt it into your Hermes plugin / provider wrapper.
 
 ```python
 import httpx
 
 async def push_token_event(
     model: str,
-    role: str | None,
+    project_name: str = "hermes",
+    provider: str | None = None,
+    tool_name: str | None = None,
+    session_id: str | None = None,
+    trace_id: str | None = None,
+    span_id: str | None = None,
+    parent_span_id: str | None = None,
+    turn_id: str | None = None,
+    api_request_id: str | None = None,
+    client_event_id: str | None = None,
+    tool_call_count: int | None = None,
+    role: str | None = None,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
-    total_tokens: int | None = None,        # use when prompt/completion split is unavailable
-    complexity: int | None = None,          # 1–5 if already computed by source project
-    prompt_text: str | None = None,         # triggers AI scoring when complexity is absent
+    total_tokens: int | None = None,
+    complexity: int | None = None,
+    prompt_text: str | None = None,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
     process_time_ms: int | None = None,
@@ -49,15 +60,25 @@ async def push_token_event(
     response_size_bytes: int | None = None,
     status: str = "success",
     error_message: str | None = None,
-    project_name: str = "my-project",
+    base_url: str = "http://127.0.0.1:8100",
 ):
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=2.0) as client:
             await client.post(
-                "http://localhost:8100/api/events",
+                f"{base_url}/api/events",
                 headers={"X-Project-Name": project_name},
                 json={
                     "model": model,
+                    "provider": provider,
+                    "tool_name": tool_name,
+                    "session_id": session_id,
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "parent_span_id": parent_span_id,
+                    "turn_id": turn_id,
+                    "api_request_id": api_request_id,
+                    "client_event_id": client_event_id,
+                    "tool_call_count": tool_call_count,
                     "role": role,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
@@ -72,34 +93,59 @@ async def push_token_event(
                     "status": status,
                     "error_message": error_message,
                 },
-                timeout=2.0,
             )
     except Exception:
         pass  # inspector being down must never fail the calling project
 ```
 
-### myprojectteam integration
+### Batch ingest
 
-Call `push_token_event()` inside `_record_token_usage()` in
-`apps/dispatcher/app/dispatcher.py` after the existing `TokenUsage` insert.
+If you already buffer events in memory, send them in one POST:
+
+```python
+await client.post(
+    "http://127.0.0.1:8100/api/events/batch",
+    headers={"X-Project-Name": "hermes"},
+    json={"events": [event1, event2, event3]},
+)
+```
+
+The batch endpoint deduplicates by `client_event_id` when present.
+
+## Hermes integration notes
+
+For Hermes, the best source of data is the shared model/provider hook path:
+
+- `post_api_request` / `post_llm_call` for usage + latency + model/provider metadata
+- `pre_tool_call` / `post_tool_call` for the active tool name and tool result boundary
+- `session_id`, `turn_id`, and `api_request_id` for later trace correlation
+
+That lets one telemetry sink cover:
+
+- main agent model calls
+- auxiliary calls from browser / vision / compression / search / MCP / TTS paths
+- tool-scoped and session-scoped analysis in the dashboard
 
 ## API Reference
 
 ```
 POST /api/events                          Ingest a token event
+POST /api/events/batch                    Ingest a batch of token events
 GET  /api/events?project=&model=&status=  Paginated event log
 
 GET  /api/analytics/summary?days=7        Overall stats
-GET  /api/analytics/by-project?days=30   Per-project breakdown
-GET  /api/analytics/by-model?days=30     Per-model breakdown
-GET  /api/analytics/by-role?days=30      Per-role breakdown
-GET  /api/analytics/timeseries?days=30   Daily buckets for charts
-GET  /api/analytics/by-complexity?days=30    Avg cost/tokens grouped by complexity tier
-GET  /api/analytics/routing-recommendations  Model switch suggestions by (role, complexity)
+GET  /api/analytics/by-project?days=30    Per-project breakdown
+GET  /api/analytics/by-model?days=30      Per-model breakdown
+GET  /api/analytics/by-provider?days=30   Per-provider breakdown
+GET  /api/analytics/by-tool?days=30       Per-tool breakdown
+GET  /api/analytics/by-role?days=30       Per-role breakdown
+GET  /api/analytics/timeseries?days=30    Daily buckets for charts
+GET  /api/analytics/by-complexity?days=30 Avg cost/tokens grouped by complexity tier
+GET  /api/analytics/routing-recommendations Model switch suggestions by (role, complexity)
 
-GET    /api/settings/pricing             List pricing rules
-POST   /api/settings/pricing             Add or update a pricing rule
-DELETE /api/settings/pricing/{model}     Remove a pricing rule
+GET    /api/settings/pricing              List pricing rules
+POST   /api/settings/pricing              Add or update a pricing rule
+DELETE /api/settings/pricing/{model}      Remove a pricing rule
 ```
 
 ## Data Fields Captured Per Event
@@ -108,6 +154,16 @@ DELETE /api/settings/pricing/{model}     Remove a pricing rule
 |---|---|---|
 | project_name | string | From `X-Project-Name` header |
 | model | string | e.g. `claude-sonnet-4-6`, `openai/gpt-4o` |
+| provider | string? | e.g. `anthropic`, `openai`, `google` |
+| tool_name | string? | Hermes tool / aux task name |
+| session_id | string? | Session correlation id |
+| trace_id | string? | Request trace id |
+| span_id | string? | Child span id |
+| parent_span_id | string? | Parent span id |
+| turn_id | string? | Turn-level correlation id |
+| api_request_id | string? | Request-scoped correlation id |
+| client_event_id | string? | Optional idempotency key |
+| tool_call_count | int? | Number of tool calls in the assistant response |
 | role | string? | Agent role, nullable |
 | prompt_tokens | int | Input token count |
 | completion_tokens | int | Output token count |
