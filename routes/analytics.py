@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -9,6 +10,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database import get_session
 from models import TokenEvent
+from project_inventory import discover_projects
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -139,6 +141,36 @@ async def _grouped(
 @router.get("/by-project")
 async def by_project(days: int = 30, session: AsyncSession = Depends(get_session)):
     return await _grouped(session, field=TokenEvent.project_name, label="project_name", days=days)
+
+
+@router.get("/project-inventory")
+async def project_inventory(days: int = 30, session: AsyncSession = Depends(get_session)):
+    projects = await asyncio.to_thread(discover_projects)
+    query = (
+        select(
+            TokenEvent.project_name,
+            func.count(TokenEvent.id).label("event_count"),
+            func.coalesce(func.sum(TokenEvent.prompt_tokens + TokenEvent.completion_tokens), 0).label("total_tokens"),
+            func.max(TokenEvent.recorded_at).label("last_activity_at"),
+        )
+        .where(*_llm_filter(days))
+        .group_by(TokenEvent.project_name)
+    )
+    activity_rows = (await session.execute(query)).mappings().all()
+    activity = {row["project_name"]: row for row in activity_rows}
+    result = []
+    for project in projects:
+        row = activity.get(project["project_name"])
+        result.append(
+            {
+                **project,
+                "has_telemetry": row is not None,
+                "event_count": int(row["event_count"] or 0) if row else 0,
+                "total_tokens": int(row["total_tokens"] or 0) if row else 0,
+                "last_activity_at": row["last_activity_at"] if row else None,
+            }
+        )
+    return result
 
 
 @router.get("/by-model")

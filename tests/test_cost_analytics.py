@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 
@@ -112,6 +114,52 @@ async def test_complexity_analytics_include_unpriced_events(client):
             "priced_event_count": 0,
         }
     ]
+
+
+async def test_project_inventory_includes_repositories_without_events(client, monkeypatch, tmp_path):
+    active = tmp_path / "folder-name"
+    inactive = tmp_path / "inactive-folder"
+    subprocess.run(["git", "init", "-q", str(active)], check=True)
+    subprocess.run(["git", "init", "-q", str(inactive)], check=True)
+    subprocess.run(
+        ["git", "-C", str(active), "remote", "add", "origin", "git@example.invalid:team/canonical-repo.git"],
+        check=True,
+    )
+    monkeypatch.setenv("TOKEN_INSPECTOR_PROJECT_ROOTS", str(tmp_path))
+
+    await client.post(
+        "/api/events",
+        headers={"X-Project-Name": "canonical-repo"},
+        json={"model": "unknown-model", "client_event_id": "inventory-event", "prompt_tokens": 10},
+    )
+
+    response = await client.get("/api/analytics/project-inventory?days=30")
+
+    assert response.status_code == 200
+    rows = response.json()
+    assert rows == [
+        {
+            "project_name": "canonical-repo",
+            "directory_name": "folder-name",
+            "discovery_source": "git_remote",
+            "workspace_id": rows[0]["workspace_id"],
+            "has_telemetry": True,
+            "event_count": 1,
+            "total_tokens": 10,
+            "last_activity_at": rows[0]["last_activity_at"],
+        },
+        {
+            "project_name": "inactive-folder",
+            "directory_name": "inactive-folder",
+            "discovery_source": "git_root",
+            "workspace_id": rows[1]["workspace_id"],
+            "has_telemetry": False,
+            "event_count": 0,
+            "total_tokens": 0,
+            "last_activity_at": None,
+        },
+    ]
+    assert all("/" not in row["workspace_id"] for row in rows)
 
 
 async def test_recost_dry_run_does_not_mutate(client):

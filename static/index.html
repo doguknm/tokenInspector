@@ -35,13 +35,13 @@
         <div class="card"><div class="card-label">Total Events</div><div class="card-value" id="stat-events">—</div></div>
         <div class="card"><div class="card-label">Total Tokens</div><div class="card-value" id="stat-tokens">—</div></div>
         <div class="card"><div class="card-label">Total Cost (USD)</div><div class="card-value" id="stat-cost">—</div></div>
-        <div class="card"><div class="card-label">Active Projects</div><div class="card-value" id="stat-projects">—</div></div>
+        <div class="card"><div class="card-label">Observed Projects</div><div class="card-value" id="stat-projects">—</div></div>
       </div>
       <div class="charts-row">
         <div class="chart-box wide"><canvas id="chart-timeseries"></canvas></div>
         <div class="chart-box"><canvas id="chart-top-models"></canvas></div>
       </div>
-      <h3>Projects Breakdown</h3>
+      <h3>Observed Activity Breakdown</h3>
       <div class="table-wrap">
         <table id="table-projects">
           <thead><tr><th>Project</th><th>Events</th><th>Tokens</th><th>Cost (USD)</th><th>Avg Latency (ms)</th></tr></thead>
@@ -56,6 +56,24 @@
         <h2>Projects</h2>
         <select id="project-select"><option value="">Select project…</option></select>
       </div>
+      <div class="info-banner">
+        Known repositories are discovered from configured filesystem roots. Observed activity comes only from telemetry events; an inventory entry with no telemetry has not produced token usage.
+      </div>
+      <h3>Known Repositories — Filesystem Inventory</h3>
+      <div class="table-wrap">
+        <table id="table-project-inventory">
+          <thead><tr><th>Repository</th><th>Local Directory</th><th>Identity Source</th><th>Telemetry</th><th>Events</th><th>Tokens</th><th>Last Activity</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3>Observed Activity — Event-backed Telemetry</h3>
+      <div class="table-wrap">
+        <table id="table-observed-projects">
+          <thead><tr><th>Attribution</th><th>Events</th><th>Tokens</th><th>Cost (USD)</th><th>Avg Latency</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3>Selected Project Analytics</h3>
       <div class="charts-row">
         <div class="chart-box wide"><canvas id="chart-proj-timeseries"></canvas></div>
         <div class="chart-box half"><canvas id="chart-proj-roles"></canvas></div>

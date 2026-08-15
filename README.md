@@ -22,7 +22,7 @@ Open http://localhost:8100
 | View | What it shows |
 |---|---|
 | Overview | Stat cards, daily token+cost line chart, top models by cost, per-project table |
-| Projects | Select a project → timeline, role donut, model donut, paginated event log |
+| Projects | Separates bounded Git repository inventory (including repositories with zero events) from event-backed observed activity; select either identity for filtered analytics |
 | Models | Cross-project latency bar chart, cost comparison table |
 | Complexity | Avg tokens by deterministic complexity tier (1–5), routing recommendations table |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |

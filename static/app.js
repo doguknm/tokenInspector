@@ -126,12 +126,48 @@ async function loadOverview() {
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 async function loadProjectsView() {
-  const byProject = await api(`/api/analytics/by-project?days=90`);
+  const [inventory, byProject] = await Promise.all([
+    api('/api/analytics/project-inventory?days=90'),
+    api('/api/analytics/by-project?days=90'),
+  ]);
+
+  const inventoryBody = document.querySelector('#table-project-inventory tbody');
+  inventoryBody.innerHTML = inventory.map(r => `
+    <tr>
+      <td><code>${r.project_name}</code></td>
+      <td>${r.directory_name}</td>
+      <td>${r.discovery_source}</td>
+      <td><span class="badge ${r.has_telemetry ? 'badge-success' : ''}">${r.has_telemetry ? 'observed' : 'inventory only'}</span></td>
+      <td>${fmt.num(r.event_count)}</td>
+      <td>${fmt.num(r.total_tokens)}</td>
+      <td>${fmt.date(r.last_activity_at)}</td>
+    </tr>`).join('');
+
+  const observedBody = document.querySelector('#table-observed-projects tbody');
+  observedBody.innerHTML = byProject.map(r => `
+    <tr>
+      <td><code>${r.project_name}</code></td>
+      <td>${fmt.num(r.event_count)}</td>
+      <td>${fmt.num(r.total_tokens)}</td>
+      <td>${fmt.cost(r.total_cost_usd)}</td>
+      <td>${fmt.ms(r.avg_process_time_ms)}</td>
+    </tr>`).join('');
+
   const sel = document.getElementById('project-select');
   const current = sel.value;
+  const inventoryNames = new Set(inventory.map(r => r.project_name));
+  const observedOnly = byProject.filter(r => !inventoryNames.has(r.project_name));
+  const knownOptions = inventory.map(r => `<option value="${r.project_name}">${r.project_name} (${r.directory_name})</option>`).join('');
+  const observedOptions = observedOnly.map(r => `<option value="${r.project_name}">${r.project_name}</option>`).join('');
   sel.innerHTML = '<option value="">Select project…</option>' +
-    byProject.map(r => `<option value="${r.project_name}" ${r.project_name === current ? 'selected' : ''}>${r.project_name}</option>`).join('');
-  if (current) loadProjectData(current);
+    `<optgroup label="Known repositories">${knownOptions}</optgroup>` +
+    (observedOptions ? `<optgroup label="Observed only">${observedOptions}</optgroup>` : '');
+  if ([...inventoryNames, ...observedOnly.map(r => r.project_name)].includes(current)) {
+    sel.value = current;
+    loadProjectData(current);
+  } else {
+    currentProject = '';
+  }
 }
 
 document.getElementById('project-select').addEventListener('change', e => {
