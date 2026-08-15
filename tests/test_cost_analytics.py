@@ -74,6 +74,46 @@ async def test_analytics_are_sql_aggregated_and_cost_status_separated(client):
     assert len(timeseries) == 1
 
 
+async def test_complexity_analytics_include_unpriced_events(client):
+    response = await client.post(
+        "/api/events/batch",
+        headers={"X-Project-Name": "pegadocrag"},
+        json={
+            "events": [
+                {
+                    "model": "unknown-model",
+                    "client_event_id": "complexity-unpriced-1",
+                    "event_type": "llm_request",
+                    "complexity": 3,
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                },
+                {
+                    "model": "unknown-model",
+                    "client_event_id": "complexity-unpriced-2",
+                    "event_type": "llm_request",
+                    "complexity": 3,
+                    "prompt_tokens": 200,
+                    "completion_tokens": 40,
+                },
+            ]
+        },
+    )
+    assert response.status_code == 200
+
+    rows = (await client.get("/api/analytics/by-complexity?days=30&project=pegadocrag")).json()
+
+    assert rows == [
+        {
+            "complexity": 3,
+            "avg_cost_usd": None,
+            "avg_tokens": 180,
+            "event_count": 2,
+            "priced_event_count": 0,
+        }
+    ]
+
+
 async def test_recost_dry_run_does_not_mutate(client):
     await client.post(
         "/api/events",

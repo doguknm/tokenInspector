@@ -153,12 +153,13 @@ document.getElementById('proj-next').addEventListener('click', () => {
   projPage++;
   loadEventLog();
 });
-
 async function loadProjectData(project) {
-  const [ts, byRole, byModel] = await Promise.all([
-    api(`/api/analytics/timeseries?days=30&project=${encodeURIComponent(project)}`),
-    api(`/api/analytics/by-role?days=30`),
-    api(`/api/analytics/by-model?days=30`),
+  currentProject = project;
+  const query = `days=30&project=${encodeURIComponent(project)}`;
+  const [byModel, byRole, ts] = await Promise.all([
+    api(`/api/analytics/by-model?${query}`),
+    api(`/api/analytics/by-role?${query}`),
+    api(`/api/analytics/timeseries?${query}`),
   ]);
 
   destroyChart('proj-timeseries');
@@ -318,10 +319,10 @@ async function loadComplexity() {
   charts['complexity'] = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: byComplexity.map(r => 'C' + r.complexity),
+      labels: byComplexity.map(r => 'Tier ' + r.complexity),
       datasets: [{
-        label: 'Avg Cost ($)',
-        data: byComplexity.map(r => r.avg_cost_usd ?? 0),
+        label: 'Avg Tokens',
+        data: byComplexity.map(r => r.avg_tokens ?? 0),
         backgroundColor: CHART_COLORS,
       }],
     },
@@ -329,11 +330,11 @@ async function loadComplexity() {
       responsive: true,
       plugins: {
         legend: { display: false },
-        title: { display: true, text: 'Avg Cost by Complexity Tier', color: '#e2e8f0' },
+        title: { display: true, text: 'Avg Tokens by Deterministic Complexity', color: '#e2e8f0' },
       },
       scales: {
         x: { ticks: { color: '#e2e8f0' }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', callback: v => '$' + v.toFixed(4) }, grid: { color: '#2a2d3a' } },
+        y: { ticks: { color: '#8892a4', callback: v => fmt.num(v) }, grid: { color: '#2a2d3a' } },
       },
     },
   });

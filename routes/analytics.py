@@ -217,15 +217,21 @@ async def timeseries(
 
 @router.get("/by-complexity")
 async def by_complexity(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
-    conditions = [*_llm_filter(days), TokenEvent.complexity.is_not(None), TokenEvent.cost_status == "priced"]
+    conditions = [*_llm_filter(days), TokenEvent.complexity.is_not(None)]
     if project:
         conditions.append(TokenEvent.project_name == project)
     query = (
         select(
             TokenEvent.complexity,
-            func.avg(TokenEvent.estimated_cost_usd).label("avg_cost_usd"),
+            func.avg(
+                case(
+                    (TokenEvent.cost_status == "priced", TokenEvent.estimated_cost_usd),
+                    else_=None,
+                )
+            ).label("avg_cost_usd"),
             func.avg(TokenEvent.prompt_tokens + TokenEvent.completion_tokens).label("avg_tokens"),
             func.count(TokenEvent.id).label("event_count"),
+            func.sum(case((TokenEvent.cost_status == "priced", 1), else_=0)).label("priced_event_count"),
         )
         .where(*conditions)
         .group_by(TokenEvent.complexity)
@@ -235,9 +241,10 @@ async def by_complexity(days: int = 30, project: Optional[str] = None, session: 
     return [
         {
             "complexity": row["complexity"],
-            "avg_cost_usd": round(float(row["avg_cost_usd"]), 6),
+            "avg_cost_usd": round(float(row["avg_cost_usd"]), 6) if row["avg_cost_usd"] is not None else None,
             "avg_tokens": round(float(row["avg_tokens"])),
             "event_count": int(row["event_count"]),
+            "priced_event_count": int(row["priced_event_count"] or 0),
         }
         for row in rows
     ]

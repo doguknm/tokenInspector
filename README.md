@@ -24,7 +24,7 @@ Open http://localhost:8100
 | Overview | Stat cards, daily token+cost line chart, top models by cost, per-project table |
 | Projects | Select a project → timeline, role donut, model donut, paginated event log |
 | Models | Cross-project latency bar chart, cost comparison table |
-| Complexity | Avg cost by complexity tier (C1–C5), routing recommendations table |
+| Complexity | Avg tokens by deterministic complexity tier (1–5), routing recommendations table |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
 
 ## Connecting Hermes or any other project
@@ -175,13 +175,17 @@ DELETE /api/settings/pricing/{model}      Remove a pricing rule
 | estimated_cost_usd | float? | Calculated at ingest from pricing table |
 | status | string | success / error / timeout |
 | error_message | string? | Set when status is error |
-| complexity | int? | 1–5 complexity tier; set by source or AI scorer |
+| complexity | int? | 1–5 tier; deterministic plugin metadata or legacy AI scorer |
 | prompt_text | str? | Truncated prompt for AI scoring (max 3000 chars) |
 | recorded_at | string | ISO8601 UTC timestamp |
 
-## AI Complexity Scoring
+## Complexity Scoring
 
-When an event is pushed with `prompt_text` but no `complexity`, the inspector
+The Hermes plugin normally sends deterministic `request-shape-v1` complexity. It is computed at request time from numeric metadata and does not require or retain raw content. The `/api/analytics/by-complexity` endpoint includes both priced and unpriced events in token averages; cost averages remain `null` when no priced observations exist.
+
+### Legacy opt-in AI scorer
+
+When another source pushes an event with `prompt_text` but no `complexity`, the inspector
 asynchronously calls an LLM to score complexity (1–5) and updates the stored event.
 This happens in the background — the `POST /api/events` response returns immediately.
 
