@@ -10,12 +10,17 @@ A standalone local service that collects token usage events from any connected p
 
 ## Run
 
+Development:
+
 ```bash
 pip install -r requirements.txt
-python -m uvicorn main:app --host 0.0.0.0 --port 8100
+DB_PATH=/tmp/token-inspector-dev.db STORE_RAW_PROMPTS=0 \
+python -m uvicorn main:app --host 127.0.0.1 --port 8100
 ```
 
-Open http://localhost:8100
+Production on this machine is managed by the `token-inspector.service` systemd user unit and stores SQLite outside the repository. Do not delete a repository-local database expecting to reset production.
+
+Open http://127.0.0.1:8100
 
 ## Dashboard Views
 
@@ -134,7 +139,8 @@ POST /api/events/batch                    Ingest a batch of token events
 GET  /api/events?project=&model=&status=  Paginated event log
 
 GET  /api/analytics/summary?days=7        Overall stats
-GET  /api/analytics/by-project?days=30    Per-project breakdown
+GET  /api/analytics/project-inventory     Bounded Git inventory with telemetry status
+GET  /api/analytics/by-project?days=30    Event-backed per-project breakdown
 GET  /api/analytics/by-model?days=30      Per-model breakdown
 GET  /api/analytics/by-provider?days=30   Per-provider breakdown
 GET  /api/analytics/by-tool?days=30       Per-tool breakdown

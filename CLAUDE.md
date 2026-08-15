@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code and other AI coding assistants when working in this repository.
+Guidance for AI coding assistants working on Token Inspector.
 
 ## AI Tools
 
@@ -8,96 +8,111 @@ NOTEBOOKLM_NOTEBOOK_ID: 873a6470-05c2-40e1-be01-54b697f283aa
 
 ## Project Overview
 
-A standalone local analytics service that collects token usage events from any connected project via HTTP POST and stores them in a SQLite database. A vanilla JS dashboard visualizes cross-project token consumption, cost estimates, and LLM latency. Connected projects push one event per LLM call; the inspector calculates cost at ingest time from a user-maintained pricing table.
+Token Inspector is a standalone, privacy-first FastAPI service for LLM token observability. Connected producers send structured lifecycle events; the service performs idempotent ingest, pricing, SQLite persistence, and analytics for a vanilla JavaScript dashboard.
 
-| Layer | Technology |
-|---|---|
-| Backend | FastAPI, Python 3.13, SQLModel, aiosqlite |
-| Database | SQLite (single file, auto-created on first run) |
-| Frontend | Vanilla JS SPA, Chart.js (no build step) |
-| HTTP client | httpx (for integration helpers) |
+The Hermes integration is intentionally separate at `/home/dogukan/Projects/token_inspector`. Do not embed it into Hermes core.
 
 ## Read First
 
-**`AGENTS.md`** in the repo root is the authoritative architecture reference. Read it before touching the backend. It documents every module, the full data model, all API endpoints, the cost calculation flow, integration patterns, and known gotchas.
+1. `AGENTS.md` — operational contract and module map.
+2. `ARCHITECTURE.md` — boundaries, data flow, identity, privacy, and state.
+3. `PROJECT_MEMORY.md` — current verified state, durable decisions, and open items.
+
+## Production Runtime
+
+```text
+Service: systemd user unit token-inspector.service
+Bind: 127.0.0.1:8100
+Database: /home/dogukan/.local/share/token-inspector/token-inspector.db
+Dashboard: http://127.0.0.1:8100/
+```
+
+Production uses `DB_PATH` explicitly. Never assume the repository-local default database is production. Do not commit, mirror, or upload SQLite files or backups.
 
 ## Critical Technical Patterns
 
-### AsyncSession must be SQLModel's, not SQLAlchemy's
-`sqlalchemy.ext.asyncio.AsyncSession` does not expose `.exec()` — that method is SQLModel-specific. Always import `from sqlmodel.ext.asyncio.session import AsyncSession` in all route files and `database.py`. Using the SQLAlchemy variant causes `AttributeError: 'AsyncSession' object has no attribute 'exec'` at startup.
+- Raw prompts, responses, and tool arguments are off by default.
+- `STORE_RAW_PROMPTS=0` in production.
+- Prompt payload is accepted only as an explicit opt-in and is capped at 3000 characters.
+- Ingest remains fail-open for producers but validation remains strict at the backend.
+- `client_event_id` is idempotent per project using a partial unique SQLite index.
+- SQLite requires WAL, `busy_timeout`, foreign keys, and additive migrations.
+- Cache-read, cache-creation, reasoning, prompt, and completion tokens remain distinct.
+- Requested model, resolved model, and pricing model remain distinct.
+- Unknown pricing is `unpriced/no_rule`; never represent it as free.
+- Deterministic complexity uses `request-shape-v1` numeric metadata, not raw prompt semantics.
+- Filesystem repository inventory and event-backed observed activity are different datasets.
+- Absolute workspace paths and complete Git remote URLs must not enter telemetry storage.
 
-### Run with `python -m uvicorn`, not bare `uvicorn`
-On Windows the `uvicorn` executable may not be on PATH even after `pip install`. Always start the server with `python -m uvicorn main:app --host 0.0.0.0 --port 8100`. Never use a bare `uvicorn` invocation in commands or scripts.
+## Project Identity
 
-### Run from the project root — SQLite path is relative to CWD
-`database.py` resolves `DB_PATH` as `"token_inspector.db"` relative to the current working directory. If you start uvicorn from a different directory, the DB file is created there instead. Always `cd` to `tokenInspector/` before starting the server, or set `DB_PATH` to an absolute path via environment variable.
+The dashboard exposes:
 
-### model key in events must exactly match pricing_rules primary key
-Cost is calculated at ingest by looking up `body.model` in the `pricing_rules` table. The lookup is case-sensitive and exact. If a project sends `Claude-Sonnet-4-6` but the rule is stored as `claude-sonnet-4-6`, `estimated_cost_usd` is stored as `null`. The model key format follows the same provider-prefix convention as myprojectteam: `claude-*`, `openai/*`, `gemini/*`.
+1. **Known Repositories** — bounded discovery under configured roots, including repositories with zero events.
+2. **Observed Activity** — aggregation of `TokenEvent.project_name` for actual LLM events.
 
-### Pricing rules are seeded only once on first run
-`_seed_pricing()` in `main.py` checks `COUNT(*) FROM pricing_rules` and skips seeding if any rows exist. If the DB already exists from a previous run with no pricing data (e.g. after a manual `DELETE FROM pricing_rules`), seeding will not run again. Re-seed by deleting `token_inspector.db` and restarting.
+Canonical producer attribution order is maintained in the standalone Hermes plugin:
+
+```text
+hook metadata
+→ optional explicit marker (disabled by default)
+→ configured path alias
+→ sanitized Git origin repository slug
+→ Git root directory name
+→ hermes fallback
+```
+
+The backend inventory defaults to direct Git children of `~/Projects`, is bounded by `TOKEN_INSPECTOR_MAX_PROJECTS`, and returns only canonical name, directory name, discovery source, and a hash-first workspace identifier.
 
 ## Debugging
 
-When diagnosing unexpected behavior, check the uvicorn console output first — all FastAPI errors print there with full tracebacks.
-
-| What | Where |
-|---|---|
-| Server errors and tracebacks | uvicorn stdout (the terminal running the server) |
-| SQLite data inspection | `sqlite3 token_inspector.db` then `.tables` / `SELECT` |
-| API response shape | `curl -s http://localhost:8100/api/<endpoint>` |
+Start with `systemctl --user status token-inspector.service`, the backend journal, the relevant API response, and scoped SQLite metadata. For project anomalies trace `session_id`, `trace_id`, timestamp, `project_source`, and `project_confidence`; never inspect or copy raw content as a first diagnostic step.
 
 ## Development Workflow
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+cd /home/dogukan/Projects/tokenInspector
+.venv/bin/python -m pytest -q
+.venv/bin/python -m py_compile *.py routes/*.py
+node --check static/app.js
 
-# Start the server (must be run from tokenInspector/ directory)
-python -m uvicorn main:app --host 0.0.0.0 --port 8100
-
-# Start with auto-reload during development
-python -m uvicorn main:app --host 0.0.0.0 --port 8100 --reload
-
-# Inspect the database directly
-sqlite3 token_inspector.db
-
-# POST a test event
-curl -X POST http://localhost:8100/api/events \
-  -H "X-Project-Name: test" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"claude-sonnet-4-6","role":"backend","prompt_tokens":1000,"completion_tokens":500,"status":"success"}'
-
-# Reset the database (re-seeds pricing on next start)
-rm token_inspector.db
+DB_PATH=/tmp/token-inspector-dev.db STORE_RAW_PROMPTS=0 .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8100
 ```
+
+Never delete the production database to re-seed pricing. Use settings APIs, model aliases, and recost dry-run/apply operations.
 
 ## Key File Locations
 
-| What | Where |
+| Concern | Path |
 |---|---|
-| FastAPI app entry + startup seeding | `main.py` |
-| SQLite engine + session factory | `database.py` |
-| DB models + pricing seed data | `models.py` |
-| Ingest endpoint (POST /api/events) | `routes/events.py` |
-| Analytics query endpoints | `routes/analytics.py` |
-| Pricing CRUD endpoints | `routes/settings.py` |
-| SPA shell + nav structure | `static/index.html` |
-| All dashboard logic + Chart.js renders | `static/app.js` |
-| Dashboard styling | `static/style.css` |
-| SQLite database file | `token_inspector.db` (auto-created, gitignored) |
+| App startup and routers | `main.py` |
+| SQLite engine/migrations | `database.py`, `migrations.py` |
+| Event/pricing schema | `models.py` |
+| Ingest/privacy/idempotency | `routes/events.py` |
+| Analytics/inventory join | `routes/analytics.py`, `project_inventory.py` |
+| Pricing aliases/recost | `routes/settings.py` |
+| Legacy opt-in AI scorer | `complexity_scorer.py` |
+| Dashboard | `static/index.html`, `static/app.js`, `static/style.css` |
+| Tests | `tests/` |
+| Hermes producer plugin | `/home/dogukan/Projects/token_inspector` |
 
 ## Recurring Problems
 
-A living record of problems that have recurred or are likely to recur. Check this list when diagnosing unexpected behaviour before diving into code.
+1. **Phantom project attribution**
+   - Check event `session_id`, `trace_id`, timestamp, and tags `project_source`/`project_confidence`.
+   - Do not infer activity from filesystem presence.
+   - Prompt markers must remain disabled unless explicitly opted in.
 
-1. **`AttributeError: 'AsyncSession' object has no attribute 'exec'` on startup**
-   - **Symptoms:** Server crashes immediately after `Waiting for application startup.` with the above error in the traceback.
-   - **Root cause:** Route or `main.py` imported `AsyncSession` from `sqlalchemy.ext.asyncio` instead of `sqlmodel.ext.asyncio.session`. SQLAlchemy's `AsyncSession` lacks the `.exec()` method.
-   - **Fix/check:** Search for `from sqlalchemy.ext.asyncio import AsyncSession` in all `.py` files and replace with `from sqlmodel.ext.asyncio.session import AsyncSession`.
+2. **Repository folder differs from canonical repository name**
+   - Prefer configured alias, then sanitized Git `origin` slug, then root folder name.
+   - Never store or display the full remote URL.
 
-2. **`estimated_cost_usd` is always `null` for a model**
-   - **Symptoms:** POST /api/events returns `{"estimated_cost_usd": null}` even though a pricing rule should exist.
-   - **Root cause:** The `model` string in the event payload does not exactly match the `model` primary key in `pricing_rules` (case mismatch or different prefix format).
-   - **Fix/check:** `sqlite3 token_inspector.db "SELECT model FROM pricing_rules WHERE model LIKE '%<substring>%';"` to find the exact stored key. Ensure the sending project uses the identical string.
+3. **Unknown model appears as zero cost**
+   - Check `cost_status`, `cost_status_reason`, and `pricing_model`.
+   - Add a pricing rule or alias and use recost with dry-run first.
+
+4. **Unexpected or empty database**
+   - Inspect the service `DB_PATH`; repository-local `token_inspector.db` is not production.
+
+5. **Backend unavailable**
+   - Producer plugin must remain bounded and fail-open; inspect its queue/flush behavior without blocking Hermes.
