@@ -248,3 +248,5 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 - The migration engine emits `BEGIN IMMEDIATE`; without it pysqlite autocommits DDL and a failed migration leaves partial tables.
 - `TrustedHostMiddleware` rejects any Host not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`); test clients use `http://test`, so the test conftest adds `test`.
 - Retention globs `<db>.bak-v*` but skips `-wal`/`-shm`/`-journal` siblings, which are not databases.
+- The lifespan ends with `engine.dispose()`: aiosqlite worker threads are non-daemon, so an undisposed pooled connection blocks process exit.
+- Distro SQLite builds (hermes) default `secure_delete` ON; tests that need leftover freed-page bytes set it OFF explicitly.

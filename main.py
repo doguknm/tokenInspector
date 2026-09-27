@@ -12,7 +12,7 @@ from sqlmodel import select
 import features
 import jev_scorer
 import retention
-from database import AsyncSessionLocal, DB_PATH, init_db
+from database import AsyncSessionLocal, DB_PATH, engine, init_db
 from models import PricingRule, SEED_PRICING, _now
 from routes import analytics, events, meta, settings, tasks
 
@@ -46,6 +46,8 @@ async def lifespan(app: FastAPI):
         loop_task.cancel()
         with suppress(asyncio.CancelledError):
             await loop_task
+        # aiosqlite worker threads are non-daemon: a pooled connection left open blocks process exit
+        await engine.dispose()
 
 
 async def _startup_purge() -> None:

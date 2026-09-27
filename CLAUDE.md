@@ -145,3 +145,13 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
    - **Symptoms:** `tasks.prompt_text` stays NULL for new Hermes turns.
    - **Root cause:** Capture is gated three times: backend flag + `INGEST_TOKEN` (≥ 16 chars) + valid purge interval; plugin `capture_task_prompt: true`; and the plugin's `/api/meta` probe (every 10 min) must see `schema_version ≥ 10` and `task_prompt_capture: true`.
    - **Fix/check:** `curl -s http://127.0.0.1:8100/api/meta` (look at `task_prompt_capture_disabled_reason` and `config_errors`), check the plugin config, and wait one probe interval or restart the gateway.
+
+10. **Test run or server hangs at exit after the lifespan ends**
+   - **Symptoms:** A process that ran the app lifespan (e.g. a `DB_PATH=:memory:` subprocess test, or uvicorn on shutdown) finishes its work but never exits; a faulthandler dump shows only an `aiosqlite ... _connection_worker_thread` and `threading._shutdown`.
+   - **Root cause:** aiosqlite ≥ 0.22 worker threads are non-daemon. A pooled connection that was never closed keeps its thread alive, so interpreter shutdown waits forever. Whether it happens depends on GC timing, so it can pass alone and hang in the full suite.
+   - **Fix/check:** The lifespan ends with `await engine.dispose()` (`main.py`). Any other code that creates an engine must dispose it too; subprocess tests pass `timeout=` so a hang fails instead of blocking CI.
+
+11. **A secure-delete test passes on Windows but fails on hermes (Linux)**
+   - **Symptoms:** A test that simulates leftover freed pages (e.g. `test_backup_physical_cleanup_is_retried_until_free_pages_are_gone`) fails its own precondition on hermes: the text is already gone from the file.
+   - **Root cause:** Distro SQLite builds (Debian/Ubuntu) compile with `SQLITE_SECURE_DELETE` on by default, so freed pages are zeroed even on a connection that never set the pragma.
+   - **Fix/check:** Tests that need leftover bytes set `PRAGMA secure_delete=OFF` explicitly on the connection that creates them. Run the suite on hermes too before a deploy.

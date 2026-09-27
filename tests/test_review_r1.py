@@ -4,6 +4,7 @@ import asyncio
 import copy
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -77,9 +78,11 @@ def test_in_memory_database_serves_after_startup(tmp_path):
         "            print((await c.get('/api/tasks')).status_code, (await c.get('/api/meta')).status_code)\n"
         "asyncio.run(main())\n"
     )
-    env = {"DB_PATH": ":memory:", "TOKEN_INSPECTOR_ALLOWED_HOSTS": "test", "STORE_RAW_PROMPTS": "0",
-           "PATH": __import__("os").environ["PATH"], "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")}
-    run = subprocess.run([sys.executable, "-c", code], cwd=REPO, env=env, capture_output=True, text=True)
+    # inherit the environment (user-site packages need APPDATA/HOME) but drop any feature switches
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"STORE_TASK_PROMPTS", "JEV_ENABLED", "INGEST_TOKEN", "STORE_RAW_PROMPTS"}}
+    env.update({"DB_PATH": ":memory:", "TOKEN_INSPECTOR_ALLOWED_HOSTS": "test", "STORE_RAW_PROMPTS": "0"})
+    run = subprocess.run([sys.executable, "-c", code], cwd=REPO, env=env, capture_output=True, text=True, timeout=120)
     assert run.returncode == 0, run.stderr[-800:]
     assert run.stdout.strip().endswith("200 200")
 
@@ -202,6 +205,7 @@ async def test_backup_physical_cleanup_is_retried_until_free_pages_are_gone(clie
         with closing(sqlite3.connect(db)) as src, closing(sqlite3.connect(backup)) as dst:
             src.backup(dst)
         with closing(sqlite3.connect(backup)) as conn:  # an earlier purge that crashed before VACUUM
+            conn.execute("PRAGMA secure_delete=OFF")  # some builds (e.g. Debian) default it ON
             conn.execute("UPDATE tasks SET prompt_text = NULL")
             conn.commit()
             assert conn.execute("PRAGMA freelist_count").fetchone()[0] > 0

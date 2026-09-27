@@ -13,6 +13,10 @@ All notable user-visible and operational changes are documented here.
 - JEV pilot CLI (`jev_pilot.py`) with a paired-cohort report and pre-registered thresholds.
 - Request-composition counts on LLM events; `scripts/purge_task_prompts.py`, `scripts/seed_tasks_demo.py`, `scripts/rollback_v10.sql`.
 
+### Fixed
+
+- The app lifespan disposes the database engine on shutdown, so the process no longer hangs at exit on an open aiosqlite connection.
+
 - Privacy-first single and batch lifecycle ingest with correlation metadata.
 - Concurrency-safe idempotency using project-scoped client event IDs.
 - Requested/resolved/pricing model separation, model aliases, unpriced-model visibility, and recost support.
