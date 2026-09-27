@@ -113,6 +113,8 @@ Each item has an owner, an evidence artifact and the work it blocks. "discovery-
 
 Resolved by D0 on 2026-09-27 (evidence: discovery-evidence.md, decisions: Drift Log): **O1** task unit = Hermes turn; **O2** role/hierarchy from `subagent_start`, session end via `finish_reason`, composition at `pre_api_request`, file tools `read_file`/`search_files`/`read_terminal`, queue bound 2,048; **O3** provenance = `tags.complexity_version`; **O4** measured ≈ 18 turns/day (last 7 days: 129) — the pilot start date is set by the user after the Activation Gate.
 
+Resolved 2026-09-27 (user): **O6** backend is developed in the Windows repo on branch `feat/task-telemetry-jev-pilot`, tested there, pushed to the `hermes` remote (`hermes:Projects/tokenInspector`); GitHub is not touched; production deploy (pull + service restart) only with the user's approval. **O5** plugin backed up to `hermes:~/backups/token_inspector-df5eb43-20260927.tgz` (173 entries, clean tree @ `df5eb43`), cloned to `C:\Users\Bentego_Admin\Projects\token_inspector` (remote `hermes`, branch `feat/task-telemetry-jev-pilot`); tests run here and on hermes; install + gateway restart only with the user's approval.
+
 Resolved in r1 (for reference):
 - the JEV parser fixture now exists (`fixtures/jev-response-2026-09-27.json`; the 429 `Retry-After` presence was not recorded, so tests cover all header forms);
 - backup-file retention (re-purge + VACUUM of DB-directory backups);
