@@ -30,7 +30,37 @@ Open http://127.0.0.1:8100
 | Projects | Separates bounded Git repository inventory (including repositories with zero events) from event-backed observed activity; select either identity for filtered analytics |
 | Models | Cross-project latency bar chart, cost comparison table |
 | Complexity | Avg tokens by deterministic complexity tier (1–5), routing recommendations table |
+| Tasks | One row per task (a Hermes turn): request-shape-v1 start complexity, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state; a start-complexity vs JEV scatter; a detail panel with probabilities, child tasks and evaluations. Never shows prompt text |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
+
+## Task telemetry and the JEV pilot
+
+Tasks are derived at ingest from each Hermes turn. Task prompt capture and JEV scoring are **off by default** and must not be enabled before the Approval section of [ADR-002](docs/adr/002-task-prompt-retention-and-jev.md) is filled in.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `STORE_TASK_PROMPTS` | off | Store one scrubbed prompt per task (needs `INGEST_TOKEN` ≥ 16 chars and a valid purge interval) |
+| `TASK_PROMPT_PURGE_INTERVAL_S` | `21600` | Purge loop target lag, 1..21600; `0` only after a verified all-copy purge |
+| `JEV_ENABLED` | off | JEV worker (needs `AI_GATEWAY_API_KEY`, `INGEST_TOKEN`, valid budget) |
+| `AI_GATEWAY_API_KEY` | — | From `~/.config/token-inspector/secrets.env`; never logged or returned |
+| `JEV_DAILY_BUDGET_USD` / `JEV_MONTHLY_BUDGET_USD` / `JEV_MAX_CALLS_PER_DAY` | `0.05` / `0.50` / `200` | Ceilings, enforced before every call |
+| `JEV_MAX_RETRY_WAIT_S` | `60` | Longest Retry-After honoured in a run |
+| `TOKEN_INSPECTOR_ALLOWED_HOSTS` | `127.0.0.1,localhost` | Host allowlist |
+| `TOKEN_INSPECTOR_ALLOWED_ORIGINS` | loopback origins | Extra origins for sensitive endpoints |
+| `REDACT_INTERNAL_HOST_SUFFIXES`, `REDACT_EXTRA_TERMS` | — | Extra redaction for internal domains and names |
+
+The systemd unit reads the key with `EnvironmentFile=%h/.config/token-inspector/secrets.env`. `GET /api/meta` shows both gates and a configuration preflight (`config_errors`) even while the flags are off.
+
+Pilot CLI (over HTTP, token from `INGEST_TOKEN`; sample files and reports hold no prompt text):
+
+```bash
+python jev_pilot.py select --n 50 --seed 7
+python jev_pilot.py label  --sample ~/.local/share/token-inspector/pilot/sample-seed7.json --labeler <you>
+python jev_pilot.py score  --sample <file> --labeler <you>
+python jev_pilot.py report --sample <file> --labeler <you> --out Plans/task-telemetry-jev-pilot/pilot-report.md
+```
+
+Rollback and purge: see the runbook in ADR-002 (`scripts/purge_task_prompts.py`, `scripts/rollback_v10.sql`).
 
 ## Connecting Hermes or any other project
 

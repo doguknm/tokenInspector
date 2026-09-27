@@ -5,7 +5,9 @@
 ```bash
 cd /home/dogukan/Projects/tokenInspector
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+# optional browser suite
+.venv/bin/pip install -r requirements-browser.txt && .venv/bin/python -m playwright install chromium
 ```
 
 Use a disposable development database:
@@ -28,10 +30,12 @@ Never run tests or local experiments against the production SQLite path.
 
 ```bash
 .venv/bin/python -m pytest -q
-.venv/bin/python -m py_compile *.py routes/*.py
+.venv/bin/python -m py_compile *.py routes/*.py scripts/*.py
 node --check static/app.js
 git diff --check
 ```
+
+`tests/browser/` (marker `browser`) runs only when Playwright is installed; it starts a live server on a seeded demo DB (`scripts/seed_tasks_demo.py`). Plugin tests live in the separate `token_inspector` repository.
 
 ## Safety
 

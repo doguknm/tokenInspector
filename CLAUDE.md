@@ -93,7 +93,16 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 | Pricing aliases/recost | `routes/settings.py` |
 | Legacy opt-in AI scorer | `complexity_scorer.py` |
 | Dashboard | `static/index.html`, `static/app.js`, `static/style.css` |
-| Tests | `tests/` |
+| Feature gates / sensitive auth | `features.py`, `auth.py`, `routes/meta.py` |
+| Task derivation (task = Hermes turn) | `task_store.py` |
+| Tasks API, labels, evaluate, retention endpoints | `routes/tasks.py` |
+| Prompt scrubber (`task-redact-v1`) | `redaction.py` (= plugin `task_redact.py`) |
+| Retention / purge | `retention.py`, `scripts/purge_task_prompts.py` |
+| JEV worker | `jev_scorer.py` |
+| Pilot CLI | `jev_pilot.py`, `pilot_metrics.py` |
+| Demo seed / rollback | `scripts/seed_tasks_demo.py`, `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` |
+| Task prompt policy | `docs/adr/002-task-prompt-retention-and-jev.md` |
+| Tests | `tests/` (browser suite: `tests/browser/`, marker `browser`) |
 | Hermes producer plugin | `/home/dogukan/Projects/token_inspector` |
 
 ## Recurring Problems
@@ -116,3 +125,23 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 
 5. **Backend unavailable**
    - Producer plugin must remain bounded and fail-open; inspect its queue/flush behavior without blocking Hermes.
+
+6. **`RuntimeError: ... is bound to a different event loop` in concurrent tests**
+   - **Symptoms:** A test that fires many requests at once (e.g. `asyncio.gather` of 20 POSTs) passes alone but fails in the full suite.
+   - **Root cause:** Each pytest-asyncio test runs in its own event loop; the async engine's pooled-connection queue stays bound to the loop of an earlier test and breaks once concurrency exceeds the pool size.
+   - **Fix/check:** `tests/conftest.py` calls `await engine.dispose()` at the start of the `client` fixture. Keep that line; run `python -m pytest -q` twice to confirm.
+
+7. **`Runner.run() cannot be called from a running event loop` after the browser tests**
+   - **Symptoms:** Every async test after `tests/browser/` errors at setup.
+   - **Root cause:** The sync Playwright API runs an event loop on the main thread while a `sync_playwright()` context is open; a session-scoped browser fixture keeps it open for the rest of the run.
+   - **Fix/check:** Keep the `browser` fixture in `tests/browser/conftest.py` module-scoped. CI runs the browser suite as a separate job (`-m browser`).
+
+8. **`Host key verification failed` when reaching hermes from Git Bash**
+   - **Symptoms:** `ssh hermes …` or `git push hermes` from Git Bash fails although Windows PowerShell `ssh hermes` works.
+   - **Root cause:** Git Bash's own `ssh.exe` mis-encodes the non-ASCII Windows home path and misses `~/.ssh/config` and `known_hosts`.
+   - **Fix/check:** Use `/c/WINDOWS/System32/OpenSSH/ssh.exe` (the repo sets `core.sshCommand` to it); add `-o ClearAllForwardings=yes` because the ssh config forwards ports.
+
+9. **Task prompts never arrive although `STORE_TASK_PROMPTS=1`**
+   - **Symptoms:** `tasks.prompt_text` stays NULL for new Hermes turns.
+   - **Root cause:** Capture is gated three times: backend flag + `INGEST_TOKEN` (≥ 16 chars) + valid purge interval; plugin `capture_task_prompt: true`; and the plugin's `/api/meta` probe (every 10 min) must see `schema_version ≥ 10` and `task_prompt_capture: true`.
+   - **Fix/check:** `curl -s http://127.0.0.1:8100/api/meta` (look at `task_prompt_capture_disabled_reason` and `config_errors`), check the plugin config, and wait one probe interval or restart the gateway.

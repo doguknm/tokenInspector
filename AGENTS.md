@@ -53,8 +53,21 @@ Backend unavailability must never break the caller. Backend validation failures 
 | `project_inventory.py` | bounded direct-child Git discovery and privacy-safe canonical identity |
 | `routes/settings.py` | pricing CRUD, aliases, unpriced models, recost dry-run/apply |
 | `complexity_scorer.py` | legacy opt-in raw-prompt AI scoring only |
-| `static/` | dashboard shell, charts, tables, styles |
-| `tests/` | ingest, idempotency, pricing, analytics, inventory regressions |
+| `features.py` | feature gates for task prompt capture and JEV, config preflight, Host/Origin allowlists |
+| `auth.py` | `require_ingest_auth` and `require_sensitive_auth` (token always required, Origin check) |
+| `task_store.py` | task derivation shared by the v10 backfill and live ingest (task = Hermes turn) |
+| `redaction.py` | `task-redact-v1` scrubber, byte-identical to the plugin's `task_redact.py` |
+| `retention.py` | purge of expired prompts/notes across DB, WAL and backups; scheduling; status |
+| `jev_scorer.py` | JEV worker: durable budget reservations, cooldowns, Retry-After, validation |
+| `routes/tasks.py` | Tasks API, labels, evaluate, evaluator status/runs, retention status, purge |
+| `routes/meta.py` | `/api/meta`: schema version, feature gates and config errors |
+| `jev_pilot.py`, `pilot_metrics.py` | pilot CLI over HTTP (select, blind label, score, report) and its statistics |
+| `scripts/purge_task_prompts.py` | stdlib-only purge used by the rollback runbook |
+| `scripts/seed_tasks_demo.py` | fixed demo DB for the Tasks view and browser tests |
+| `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` | schema rollback and code-only rollback check |
+| `static/` | dashboard shell, charts, tables, styles (Tasks view included) |
+| `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot regressions |
+| `tests/browser/` | Playwright suite (marker `browser`; skipped without Playwright) |
 
 ## Data and Privacy Contract
 
@@ -77,6 +90,12 @@ capture_tool_args=false
 ```
 
 Never persist raw response bodies or tool arguments. Never send absolute workspace paths, complete remotes, credentials, private network identifiers, or authenticated payloads.
+
+**Task prompt exception (ADR-002).** `STORE_TASK_PROMPTS` (separate from `STORE_RAW_PROMPTS`, which stays `0`) stores one `task-redact-v1`-scrubbed prompt per task in `tasks.prompt_text`, never in `token_events`. It needs `INGEST_TOKEN` (≥ 16 chars) and a valid purge interval, is never extended past producer capture time + 30 days, and is unreadable once expired even before the purge runs. Activation requires the ADR-002 Approval section.
+
+## Tasks (schema v10)
+
+A task is one Hermes turn (`(project_name, session_id, turn_id)`); Hermes' `task_id` is kept as `source_task_id` because it is session-scoped on the gateway. `task_ref = sha256(project \x1f session_id \x1f turn_id)[:32]`. Start complexity uses one rule for backfill and ingest (method `request-shape-v1` from the column or `tags.complexity_version`, earliest `(time, id)` wins). Completion is recomputed per project+session after every event, so arrival order does not matter. Hierarchy comes from `parent_session_id` + `parent_turn_id` (plugin `subagent_start`); `child` is never downgraded.
 
 ## Idempotency and Concurrency
 
@@ -113,6 +132,8 @@ request-shape-v1
 It uses numeric request metadata: current user-message length, message count, and approximate input token count. It does not claim semantic difficulty and does not require raw prompt storage. Analytics includes unpriced observations in token averages; cost averages remain null without priced observations.
 
 `complexity_scorer.py` is legacy and only runs when a source explicitly submits `prompt_text` without complexity and credentials are configured.
+
+**JEV** (`jev_scorer.py`) is a separate, semantic start-of-task difficulty score stored in `task_evaluations`, never in `token_events.complexity`. It is not execution intensity (tokens, cost, tool calls, wall time), which the Tasks API reports separately. It runs only via `POST /api/tasks/evaluate`.
 
 ## Project Identity and Inventory
 
@@ -176,6 +197,16 @@ GET/POST/DELETE /api/settings/pricing
 GET/POST/DELETE /api/settings/aliases
 GET /api/settings/unpriced-models
 POST /api/settings/recost
+
+GET  /api/meta
+GET  /api/tasks
+GET  /api/tasks/{task_ref}            (include_prompt=true needs require_sensitive_auth)
+POST /api/tasks/{task_ref}/labels     (sensitive)
+POST /api/tasks/evaluate              (sensitive)
+GET  /api/tasks/evaluator-status
+GET  /api/tasks/evaluator-runs/{run_id}
+GET  /api/tasks/retention-status
+POST /api/tasks/purge-expired         (sensitive; dry_run=true by default)
 ```
 
 Ingest auth is optional and controlled by deployment configuration. If enabled, producers use the matching secret environment variable; never place it in repository config or docs.
@@ -208,3 +239,12 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 - Do not enable prompt marker attribution by default.
 - Do not claim NotebookLM sync without source read-back.
 - Do not mirror SQLite, `.env`, service secrets, raw logs, or session transcripts.
+- Do not enable `STORE_TASK_PROMPTS` or `JEV_ENABLED` in production before the ADR-002 Approval section is filled in.
+- Never log, return or store `AI_GATEWAY_API_KEY`; it lives only in `~/.config/token-inspector/secrets.env` (mode 600).
+
+## Gotchas
+
+- `SQLModel.metadata.create_all` runs before migrations, so the model classes define new tables; `_m10` creates them with `checkfirst` and adds `token_events` columns in declaration order so fresh and migrated schemas agree.
+- The migration engine emits `BEGIN IMMEDIATE`; without it pysqlite autocommits DDL and a failed migration leaves partial tables.
+- `TrustedHostMiddleware` rejects any Host not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`); test clients use `http://test`, so the test conftest adds `test`.
+- Retention globs `<db>.bak-v*` but skips `-wal`/`-shm`/`-journal` siblings, which are not databases.

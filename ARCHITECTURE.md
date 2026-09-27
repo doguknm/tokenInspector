@@ -76,6 +76,21 @@ hook metadata
 
 Explicit prompt markers are disabled by default to prevent examples or ordinary text from creating phantom projects.
 
+## Tasks, Retention and the Evaluator
+
+```text
+Hermes turn (plugin 0c: task_hierarchy, parent session/turn, composition counts, scrubbed prompt when ready)
+  → ingest: event insert + task upsert in one transaction (task = project + session + turn)
+  → tasks / task_evaluations (schema v10)
+  → retention: purge at startup and in a loop (DB, WAL, DB-directory backups)
+  → POST /api/tasks/evaluate → JEV worker → Vercel AI Gateway (typesafe-ai, digitalocean on 429)
+  → Tasks view and the pilot CLI (HTTP only)
+```
+
+- Task prompts are stored only under ADR-002's gate and are scrubbed twice (plugin before the queue, backend before storage).
+- The evaluator is a separate trust boundary: the scrubbed prompt leaves the machine; every call is reserved in `evaluator_attempts` first; its own usage is a `token-inspector` event that is never scored.
+- The plugin spools undeliverable batches to disk (fsync, dead-letter) and never holds a prompt past capture time + 30 days.
+
 ## Runtime State
 
 ```text
@@ -89,7 +104,7 @@ Remote exposure is not part of the default architecture. If enabled, it must rem
 
 ## Failure Behavior
 
-- Backend down: producer drops/retries within bounded queue policy; caller proceeds.
+- Backend down: producer spools the batch durably and replays it later; caller proceeds. Only the in-memory queue (≤ 2,048 events) and the in-flight batch can be lost on a crash.
 - Duplicate event: database conflict path returns deduplicated result.
 - Unknown model price: event persists as unpriced.
 - Invalid event: rejected and counted; no fabricated fallback values.
@@ -98,7 +113,8 @@ Remote exposure is not part of the default architecture. If enabled, it must rem
 ## Rejected Alternatives
 
 - Patching Hermes core or every individual tool: excessive coupling and upgrade risk.
-- Storing raw prompts by default: unnecessary privacy exposure.
+- Storing raw prompts by default: unnecessary privacy exposure (task prompts are a gated, scrubbed, 30-day exception; ADR-002).
+- A model-traffic proxy for task telemetry: risky for OAuth-based agents and blind to task boundaries.
 - Treating unknown prices as zero: falsely reports free usage.
 - Deriving project identity only from folder name: diverges from canonical repository identity.
 - Mixing repository inventory with event aggregation: implies activity where none occurred.
