@@ -187,3 +187,56 @@ def test_latest_filter_wins_and_project_options_stay(page):
     assert projects == {"demo-alpha"}
     options = page.locator("#tasks-project option").all_inner_texts()
     assert options == ["All projects", "demo-alpha", "demo-beta"]
+
+
+# --- code-review r1: P3-F1, P6-F5, P6-F6 ------------------------------------------------------------------------
+
+
+def test_vanished_project_filter_is_cleared_and_reloaded(page):
+    urls = []
+
+    def handler(route):
+        url = route.request.url
+        urls.append(url)
+        projects = ["stub", "only90"] if "days=90" in url else ["stub"]
+        route.fulfill(json={"items": [_item(1)], "total": 1, "page": 1, "page_size": 50, "projects": projects})
+
+    page.route(re.compile(r".*/api/tasks\?.*page_size=50.*"), handler)
+    open_tasks(page)
+    page.click("#tasks-days-90")
+    page.wait_for_function("[...document.querySelectorAll('#tasks-project option')].some(o => o.value === 'only90')")
+    page.select_option("#tasks-project", "only90")
+    page.wait_for_timeout(300)
+    urls.clear()
+    page.click("#tasks-days-7")
+    page.wait_for_timeout(800)
+    assert page.eval_on_selector("#tasks-project", "e => e.value") == ""
+    assert "project=" not in urls[-1]  # the last request matches what the selector shows
+
+
+def test_detail_race_between_two_tasks_keeps_the_latest_selection(page):
+    open_tasks(page)
+    rows = page.locator("#table-tasks tbody tr")
+    slow_ref = rows.nth(0).get_attribute("data-ref")
+    page.evaluate(DELAY_FETCH, [rf"/api/tasks/{slow_ref}$", 1200, 0])
+    rows.nth(0).click()
+    rows.nth(1).click()
+    page.wait_for_timeout(1800)
+    expected = rows.nth(1).locator("td.task-id").get_attribute("title")
+    assert page.inner_text("#task-detail-title") == expected
+
+
+def test_children_render_from_the_documented_shape(page):
+    detail = dict(_item(7), children=[
+        {"task_ref": "c" * 32, "turn_id": "child-turn", "source_task_id": None, "hierarchy_status": "child",
+         "start_complexity": 2, "jev_raw_score": 1.4, "first_seen_at": "2026-09-27T10:00:00.000000Z"},
+        {"task_ref": "d" * 32, "turn_id": "child-two", "source_task_id": None, "hierarchy_status": "child",
+         "start_complexity": None, "jev_raw_score": None, "first_seen_at": "2026-09-27T10:01:00.000000Z"}],
+        children_truncated=False, evaluations=[], prompt_length=None, prompt_truncated=False,
+        prompt_redaction_version=None)
+    page.route(re.compile(r".*/api/tasks/[0-9a-f]{32}$"), _fulfill_json(detail))
+    open_tasks(page)
+    page.locator("#table-tasks tbody tr").first.click()
+    page.wait_for_function("document.getElementById('task-detail-tables').innerText.includes('child-turn')")
+    text = page.inner_text("#task-detail-tables")
+    assert "child-turn\tC2\t2.4/5" in text and "child-two\t—\tnot scored" in text

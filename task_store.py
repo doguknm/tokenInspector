@@ -242,6 +242,15 @@ async def _upsert_task(db, event, body, session_id: str, now: str) -> str:
             "parent": parent_ref, "root": root_ref, "h": hierarchy, "ts": ts, "now": now,
         },
     )
+    if parent_ref:
+        # Descendants that arrived first used this task as a provisional root; re-root them.
+        await db.execute(
+            text(
+                "UPDATE tasks SET root_task_ref = (SELECT COALESCE(root_task_ref, parent_task_ref) FROM tasks WHERE id = :id), "
+                "updated_at = :now WHERE root_task_ref = :id AND project_name = :p"
+            ),
+            {"id": ref, "p": project, "now": now},
+        )
     chosen = start_complexity_candidate(event.event_type, event.complexity, event.complexity_method, event.tags_json)
     if chosen:
         await db.execute(

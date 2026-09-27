@@ -59,7 +59,11 @@ def _has_tasks_table(conn: sqlite3.Connection) -> bool:
 
 
 def _repurge_backup(path: Path, now: str, note_cutoff: str) -> bool:
-    """Same UPDATEs on a backup; VACUUM when anything changed so no free page keeps the old text."""
+    """Same UPDATEs on a backup, then physical cleanup that is retried until it succeeds.
+
+    Cleanup is stateless: any free page (a purge that was not VACUUMed yet) triggers VACUUM again,
+    and a busy checkpoint raises so the run is reported as failed and retried.
+    """
     with closing(sqlite3.connect(path)) as conn:
         if not _has_tasks_table(conn):
             return False
@@ -68,13 +72,26 @@ def _repurge_backup(path: Path, now: str, note_cutoff: str) -> bool:
         for sql, params in _purge_statements(now, note_cutoff):
             changed += conn.execute(sql, params).rowcount
         conn.commit()
-        if changed:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        if conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] != 0:
+            raise BackupCleanupError("backup checkpoint busy")
+        if changed or conn.execute("PRAGMA freelist_count").fetchone()[0] > 0:
             conn.execute("VACUUM")
         return bool(changed)
 
 
+class BackupCleanupError(RuntimeError):
+    pass
+
+
 def backup_text_present(path: Path) -> bool:
+    """True when a backup holds text; an unreadable backup counts as retained (conservative)."""
+    try:
+        return _backup_text_present(path)
+    except sqlite3.Error:
+        return True
+
+
+def _backup_text_present(path: Path) -> bool:
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
         if not _has_tasks_table(conn):
             return False
@@ -137,19 +154,29 @@ async def purge_expired(session, db_path: str, *, dry_run: bool = False, now_dt:
             await set_state(session, "pending_wal_checkpoint", "1", now)
         await session.commit()  # r2 item 1: deletion is committed before any checkpoint
 
+        errors = []
         if await get_state(session, "pending_wal_checkpoint") == "1":
             ok = await asyncio.to_thread(wal_checkpoint, db_path)
             result["checkpoint_ok"] = ok
             await set_state(session, "last_checkpoint_ok", "true" if ok else "false", now)
             if ok:
                 await set_state(session, "pending_wal_checkpoint", "0", now)
+            else:
+                errors.append("checkpoint_busy")  # physical erasure is incomplete: not a successful purge
         repurged = 0
         for backup in backups:
-            if await asyncio.to_thread(_repurge_backup, backup, now, note_cutoff):
-                repurged += 1
+            try:
+                if await asyncio.to_thread(_repurge_backup, backup, now, note_cutoff):
+                    repurged += 1
+            except (sqlite3.Error, BackupCleanupError) as exc:
+                errors.append(f"backup_{type(exc).__name__}")  # one bad backup never blocks the others
         result["backups_repurged"] = repurged
+        result["errors"] = errors
+        if errors:
+            log.error("[RETENTION] purge incomplete: %s", ",".join(errors))
         for key, value in (
-            ("last_purge_at", now), ("last_purge_ok", "true"), ("last_error", None),
+            ("last_purge_at", now), ("last_purge_ok", "false" if errors else "true"),
+            ("last_error", ",".join(errors) or None),
             ("last_backups_scanned", str(len(backups))), ("last_backups_repurged", str(repurged)),
         ):
             await set_state(session, key, value, now)

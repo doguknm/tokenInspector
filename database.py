@@ -73,6 +73,12 @@ async def init_db(db_path: str | None = None) -> None:
         raise RuntimeError(
             f"SQLite 3.24+ is required for atomic idempotent ingest; found {sqlite3.sqlite_version}"
         )
+    if path == ":memory:":
+        # A separate engine would create tables in a different in-memory database.
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+            await run_migrations(conn)
+        return
     migration_engine = _migration_engine(path)
     try:
         async with migration_engine.begin() as conn:

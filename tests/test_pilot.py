@@ -215,3 +215,57 @@ def test_report_pass_on_a_strong_cohort():
     markdown, data = jev_pilot.build_report(sample, details, "ann")
     assert data["metrics"]["n"] == 45
     assert data["metrics"]["verdict"] == "PASS" and "## Verdict: PASS" in markdown
+
+
+# --- code-review r1: P3-F2, P6-F4 ---------------------------------------------------------------------------
+
+
+def test_unavailable_prompt_is_persisted_as_a_skip(tmp_path):
+    details = {"r1": {"project_name": "hermes", "prompt_text": None, "evaluations": []}}
+    api = FakeApi(details)
+    args = SimpleNamespace(sample=str(_sample_file(tmp_path, ["r1"])), labeler="ann", notes=False,
+                           revisit_skipped=False)
+    jev_pilot.cmd_label(api, args, ask=lambda _prompt: "q")
+    assert api.labels == [("r1", "ann", None, None)]
+    score = SimpleNamespace(sample=args.sample, labeler="ann", allow_unlabelled=False)
+    assert jev_pilot.cmd_score(api, score, wait=lambda s: None) == 0  # no longer stalls on it
+
+
+def test_label_output_is_blind_to_scores(tmp_path, capsys):
+    details = {"r1": {"project_name": "hermes", "prompt_text": "Refactor the parser",
+                      "prompt_expires_at": (datetime.now(timezone.utc) + timedelta(days=9)).isoformat(),
+                      "start_complexity": 4, "start_complexity_method": "request-shape-v1",
+                      "jev": {"raw_score": 3.77, "display_score": 4.77, "confidence": 0.61}, "total_tokens": 98765,
+                      "cost_usd": 0.4321, "evaluations": []}}
+    api = FakeApi(details)
+    args = SimpleNamespace(sample=str(_sample_file(tmp_path, ["r1"])), labeler="ann", notes=False,
+                           revisit_skipped=False)
+    jev_pilot.cmd_label(api, args, ask=lambda _prompt: "2")
+    out = capsys.readouterr().out
+    assert "Refactor the parser" in out
+    for leaked in ("3.77", "4.77", "0.61", "98765", "0.4321", "request-shape", "C4"):
+        assert leaked not in out
+
+
+class DeferringApi(FakeApi):
+    def __init__(self, details, request_time=False):
+        super().__init__(details)
+        self.request_time = request_time
+
+    def evaluate(self, refs):
+        if self.request_time:
+            return {"run_id": None, "retry_not_before": "2026-09-27T13:00:00Z"}
+        return {"run_id": "run", "retry_not_before": None}
+
+    def run(self, run_id):
+        return {"status": "stopped", "stop_reason": "deferred_rate_limited",
+                "retry_not_before": "2026-09-27T13:05:00Z"}
+
+
+@pytest.mark.parametrize("request_time", [True, False])
+def test_score_exits_non_zero_when_deferred(tmp_path, capsys, request_time):
+    details = {"r1": {"evaluations": [{"evaluator": "human", "labeler": "ann", "status": "ok",
+                                       "rubric_version": "difficulty-v0"}]}}
+    args = SimpleNamespace(sample=str(_sample_file(tmp_path, ["r1"])), labeler="ann", allow_unlabelled=False)
+    assert jev_pilot.cmd_score(DeferringApi(details, request_time), args, wait=lambda s: None) == 3
+    assert "2026-09-27T13:0" in capsys.readouterr().err

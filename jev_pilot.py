@@ -297,7 +297,8 @@ def cmd_label(api: Api, args, ask: Callable[[str], str] = input) -> int:
         detail = api.detail(ref, include_prompt=True)
         expires = _parse(detail.get("prompt_expires_at"))
         if detail.get("prompt_text") is None:
-            print(f"[{ref[:8]}] prompt expired or purged; skipping display")
+            print(f"[{ref[:8]}] prompt expired or purged; recorded as skipped")
+            api.label(ref, args.labeler, None, None)  # durable, so resume and score never stall on it
             continue
         if expires and expires < now + timedelta(hours=48):
             print(f"[{ref[:8]}] warning: prompt expires within 48 h")

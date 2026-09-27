@@ -130,8 +130,14 @@ def _five(value: Any) -> list:
     raise InvalidResponse("expected 5 levels")
 
 
+def _mapping(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def validate(body: Any) -> dict:
     """Strict validation; any failure means invalid_response and no numeric value is stored."""
+    if not isinstance(body, dict):
+        raise InvalidResponse("body is not an object")
     try:
         answer = body["answers"]["difficulty"]
     except (KeyError, TypeError) as exc:
@@ -146,11 +152,20 @@ def validate(body: Any) -> dict:
     legend = _five(answer.get("legend"))
     if legend != CRITERIA:
         raise InvalidResponse("legend does not match the rubric criteria")
-    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    for key in ("usage", "provider_metadata"):
+        if key in body and not isinstance(body[key], dict):
+            raise InvalidResponse(f"{key} is not an object")
+    usage = _mapping(body.get("usage"))
     tokens = usage.get("input_tokens")
     if tokens is not None and (isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0):
         raise InvalidResponse("invalid usage.input_tokens")
-    gateway = ((body.get("provider_metadata") or {}).get("gateway") or {})
+    gateway = _mapping(_mapping(body.get("provider_metadata")).get("gateway"))
+    if "gateway" in _mapping(body.get("provider_metadata")) and not isinstance(
+            body["provider_metadata"]["gateway"], dict):
+        raise InvalidResponse("gateway metadata is not an object")
+    routing = gateway.get("routing")
+    if routing is not None and not isinstance(routing, dict):
+        raise InvalidResponse("routing is not an object")
     cost = gateway.get("cost")
     if cost is not None:
         try:
@@ -166,16 +181,16 @@ def validate(body: Any) -> dict:
         "legend": legend,
         "input_tokens": tokens,
         "cost_usd": cost,
-        "provider_used": (gateway.get("routing") or {}).get("finalProvider"),
+        "provider_used": _mapping(routing).get("finalProvider"),
     }
 
 
 def usage_of(body: Any) -> tuple[Optional[int], Optional[float]]:
     """Best-effort usage/cost for reconciliation when the answer itself is invalid."""
     try:
-        tokens = body.get("usage", {}).get("input_tokens")
+        tokens = _mapping(_mapping(body).get("usage")).get("input_tokens")
         tokens = tokens if isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0 else None
-        cost = body.get("provider_metadata", {}).get("gateway", {}).get("cost")
+        cost = _mapping(_mapping(_mapping(body).get("provider_metadata")).get("gateway")).get("cost")
         cost = float(cost) if cost is not None else None
         if cost is not None and (not math.isfinite(cost) or cost < 0):
             cost = None
@@ -325,6 +340,16 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
                 provider = PROVIDERS[1]
                 continue
             return outcome
+        fresh = (
+            await session.execute(
+                text("SELECT prompt_text, prompt_expires_at, prompt_purged_at FROM tasks WHERE id = :id"), {"id": ref}
+            )
+        ).first()
+        if fresh is None or fresh[2] is not None or fresh[0] is None or fresh[1] is None or fresh[1] <= _fmt(now()):
+            outcome.error_type = "prompt_expired" if fresh is not None and fresh[2] is None else "prompt_purged"
+            outcome.status = "skipped" if not outcome.attempts else "error"
+            return outcome  # retention ended during a wait: the text is never sent
+        state = fresh[0]
         body = request_body(state, provider)
         totals = await spend(session, now())
         reserved_cost = (len(json.dumps(body, ensure_ascii=False).encode("utf-8")) + RESERVE_OVERHEAD_TOKENS) \
@@ -355,7 +380,7 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
                 try:
                     payload = response.json()
                     result = validate(payload)
-                except (ValueError, InvalidResponse):
+                except Exception:  # any malformed body is an invalid_response, never a crashed run
                     tokens, cost = usage_of(payload) if isinstance(payload, dict) else (None, None)
                     await _complete(session, attempt, status="succeeded", http_status=code,
                                     error_type="invalid_response", tokens=tokens, cost=cost)

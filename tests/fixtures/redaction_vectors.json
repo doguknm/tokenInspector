@@ -24,5 +24,7 @@
   {"name": "private ips", "input": "10.1.2.3 172.20.0.1 192.168.1.10 100.101.2.3 8.8.8.8", "expected": "[REDACTED:private_ip] [REDACTED:private_ip] [REDACTED:private_ip] [REDACTED:private_ip] 8.8.8.8"},
   {"name": "email", "input": "mail bob.smith@example.com", "expected": "mail [REDACTED:email]"},
   {"name": "extra term", "input": "deploy on Hermes tonight", "expected": "deploy on [REDACTED:internal_host] tonight", "extra_terms": ["hermes"]},
-  {"name": "extra suffix", "input": "api.build.acme", "expected": "[REDACTED:internal_host]", "extra_host_suffixes": ["acme"]}
+  {"name": "extra suffix", "input": "api.build.acme", "expected": "[REDACTED:internal_host]", "extra_host_suffixes": ["acme"]},
+  {"name": "json secret keys", "input": "{\"password\": \"hunter2\", \"api_key\": \"opaque-secret-value\", \"user\": \"ann\"}", "expected": "{\"password\": [REDACTED:secret], \"api_key\": [REDACTED:secret], \"user\": \"ann\"}"},
+  {"name": "single-quoted key", "input": "{'client_secret': 'abc123'}", "expected": "{'client_secret': [REDACTED:secret]}"}
 ]

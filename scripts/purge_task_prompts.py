@@ -69,10 +69,14 @@ def purge_file(path: Path, mode: str, now: str, *, dry_run: bool, vacuum: bool) 
         conn.execute("PRAGMA secure_delete=ON")
         changed = sum(conn.execute(sql, params).rowcount for sql, params in _statements(mode, now))
         conn.commit()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        if vacuum and changed:
+        checkpoint_ok(conn)
+        if vacuum and (changed or conn.execute("PRAGMA freelist_count").fetchone()[0] > 0):
             conn.execute("VACUUM")
         return changed
+
+
+def checkpoint_ok(conn: sqlite3.Connection) -> bool:
+    return conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
 
 
 def backups(db: Path) -> list[Path]:
@@ -103,6 +107,15 @@ def main(argv: list[str] | None = None) -> int:
         leftover = sum(remaining_text(path) for path in files)
         if leftover:
             print(f"VERIFY FAILED: {leftover} row(s) with text remain", file=sys.stderr)
+            return 1
+        busy = []
+        for path in files:
+            with closing(sqlite3.connect(path, timeout=10)) as conn:
+                if not checkpoint_ok(conn):
+                    busy.append(path.name)
+        if busy:
+            print(f"VERIFY FAILED: WAL checkpoint busy for {', '.join(busy)}; retry when readers are closed",
+                  file=sys.stderr)
             return 1
         with closing(sqlite3.connect(args.db, timeout=10)) as conn:
             if _has(conn, "retention_state"):

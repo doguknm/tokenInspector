@@ -465,11 +465,14 @@ function setTasksError(message) {
 }
 
 function fillProjects(projects) {
+  // Returns true when the active project vanished from this window and the filter was cleared.
   const select = document.getElementById('tasks-project');
-  const keep = projects.includes(tasksProject) ? tasksProject : '';
+  const cleared = tasksProject !== '' && !projects.includes(tasksProject);
+  if (cleared) tasksProject = '';
   select.innerHTML = '<option value="">All projects</option>' +
     projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
-  select.value = keep;
+  select.value = tasksProject;
+  return cleared;
 }
 
 async function loadTasksTable(clamped = false) {
@@ -494,7 +497,10 @@ async function loadTasksTable(clamped = false) {
   }
   if (gen !== tasksTableGen) return;
   setTasksError('');
-  fillProjects(data.projects || []);
+  if (fillProjects(data.projects || [])) {
+    tasksFiltersChanged();  // the visible selector and the request must never disagree
+    return;
+  }
   const pages = Math.ceil(data.total / TASKS_PAGE_SIZE);
   if (data.items.length === 0 && data.total > 0 && tasksPage > pages && !clamped) {
     tasksPage = pages;

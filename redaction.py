@@ -28,8 +28,8 @@ _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}
 _BEARER = re.compile(r"\bBearer\s+(?!\[REDACTED)[A-Za-z0-9._~+/=\-]{16,}", re.I)
 _SECRET_ASSIGNMENT = re.compile(
     r"\b([A-Za-z0-9_.\-]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_.\-]*)"
-    r"(\s*[:=]\s*)"
-    r"(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    r"([\"']?\s*[:=]\s*)"
+    r"(?!\[REDACTED:)(\"[^\"]*\"|'[^']*'|[^\s,;}]+)",
     re.I,
 )
 _GIT_REMOTE = re.compile(
