@@ -17,7 +17,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+import database
 import features
+import retention
 from auth import require_sensitive_auth
 from database import get_session
 from redaction import scrub_text
@@ -252,6 +254,16 @@ async def list_tasks(
         "page_size": page_size,
         "projects": projects,
     }
+
+
+@router.get("/retention-status")
+async def retention_status(session: AsyncSession = Depends(get_session)):
+    return await retention.status(session, database.DB_PATH)
+
+
+@router.post("/purge-expired", dependencies=[Depends(require_sensitive_auth)])
+async def purge_expired(dry_run: bool = True, session: AsyncSession = Depends(get_session)):
+    return await retention.purge_expired(session, database.DB_PATH, dry_run=dry_run)
 
 
 class LabelIn(BaseModel):

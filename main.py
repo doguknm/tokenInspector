@@ -1,6 +1,7 @@
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -9,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import select
 
 import features
+import retention
 from database import AsyncSessionLocal, DB_PATH, init_db
 from models import PricingRule, SEED_PRICING, _now
 from routes import analytics, events, meta, settings, tasks
@@ -32,8 +34,24 @@ async def lifespan(app: FastAPI):
     await _seed_pricing()
     raw_enabled = os.environ.get("STORE_RAW_PROMPTS", "").lower() in {"1", "true", "yes", "on"}
     _log_feature_state(features.refresh())
+    await _startup_purge()
+    loop_task = asyncio.create_task(retention.retention_loop(AsyncSessionLocal, DB_PATH))
     log.info("Token Inspector ready: db=%s raw_prompts=%s", DB_PATH, raw_enabled)
-    yield
+    try:
+        yield
+    finally:
+        loop_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await loop_task
+
+
+async def _startup_purge() -> None:
+    """Runs before serving, whatever the flags, so a restored backup is purged immediately."""
+    try:
+        async with AsyncSessionLocal() as session:
+            await retention.purge_expired(session, DB_PATH)
+    except Exception:
+        log.error("[RETENTION] startup purge failed; read-time expiry still applies")
 
 
 def _log_feature_state(state: features.Features) -> None:
