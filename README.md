@@ -90,11 +90,28 @@ Rollback and purge: see the runbook in ADR-002 (`scripts/purge_task_prompts.py`,
 Use the helper below or adapt it into your Hermes plugin / provider wrapper.
 
 ```python
-import httpx
+import os
+import uuid
+
+from token_inspector_client import TokenInspectorClient, valid_ack  # noqa: F401 (valid_ack checks every ack)
+
+_client: TokenInspectorClient | None = None
+
+
+def _token_inspector() -> TokenInspectorClient:
+    """One module-level bounded client; status, ack (valid_ack) and loss counters are its own."""
+    global _client
+    if _client is None:
+        _client = TokenInspectorClient(
+            project_name=os.environ.get("TOKEN_INSPECTOR_PROJECT", "hermes"),
+            base_url=os.environ.get("TOKEN_INSPECTOR_URL", "http://127.0.0.1:8100"),
+            ingest_token=os.environ.get("TOKEN_INSPECTOR_API_KEY") or None,
+        )
+    return _client
+
 
 async def push_token_event(
     model: str,
-    project_name: str = "hermes",
     provider: str | None = None,
     tool_name: str | None = None,
     session_id: str | None = None,
@@ -110,62 +127,63 @@ async def push_token_event(
     completion_tokens: int = 0,
     total_tokens: int | None = None,
     complexity: int | None = None,
-    prompt_text: str | None = None,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
     process_time_ms: int | None = None,
     request_size_bytes: int | None = None,
     response_size_bytes: int | None = None,
     status: str = "success",
-    error_message: str | None = None,
-    base_url: str = "http://127.0.0.1:8100",
-):
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            await client.post(
-                f"{base_url}/api/events",
-                headers={"X-Project-Name": project_name},
-                json={
-                    "model": model,
-                    "provider": provider,
-                    "tool_name": tool_name,
-                    "session_id": session_id,
-                    "trace_id": trace_id,
-                    "span_id": span_id,
-                    "parent_span_id": parent_span_id,
-                    "turn_id": turn_id,
-                    "api_request_id": api_request_id,
-                    "client_event_id": client_event_id,
-                    "tool_call_count": tool_call_count,
-                    "role": role,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                    "total_tokens": total_tokens,
-                    "complexity": complexity,
-                    "prompt_text": prompt_text,
-                    "cache_read_tokens": cache_read_tokens,
-                    "cache_creation_tokens": cache_creation_tokens,
-                    "process_time_ms": process_time_ms,
-                    "request_size_bytes": request_size_bytes,
-                    "response_size_bytes": response_size_bytes,
-                    "status": status,
-                    "error_message": error_message,
-                },
-            )
-    except Exception:
-        pass  # inspector being down must never fail the calling project
+    error_type: str | None = None,
+    http_status: int | None = None,
+) -> bool:
+    """Enqueue only (never awaits HTTP); False means the event was dropped and counted."""
+    payload = {
+        "model": model,
+        "provider": provider,
+        "tool_name": tool_name,
+        "session_id": session_id,
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "parent_span_id": parent_span_id,
+        "turn_id": turn_id,
+        "api_request_id": api_request_id,
+        "client_event_id": client_event_id or uuid.uuid4().hex,  # reused on any resend
+        "tool_call_count": tool_call_count,
+        "role": role,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "complexity": complexity,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "process_time_ms": process_time_ms,
+        "request_size_bytes": request_size_bytes,
+        "response_size_bytes": response_size_bytes,
+        "status": status,
+        "error_type": error_type,
+        "http_status": http_status,
+    }
+    return await _token_inspector().post_event({k: v for k, v in payload.items() if v is not None})
+
+
+async def close_token_inspector(timeout: float = 2.0) -> None:
+    """Call at shutdown: drains the queue, then counts anything left as dropped_on_close."""
+    if _client is not None:
+        await _client.close(timeout)
 ```
 
 ### Batch ingest
 
-If you already buffer events in memory, send them in one POST:
+If you already buffer events in memory, send them in one POST. Give every event a stable
+`client_event_id`, send no prompt or error text, and check the ack:
 
 ```python
-await client.post(
+response = await client.post(
     "http://127.0.0.1:8100/api/events/batch",
-    headers={"X-Project-Name": "hermes"},
+    headers={"X-Project-Name": "hermes", "X-Ingest-Token": os.environ["TOKEN_INSPECTOR_API_KEY"]},
     json={"events": [event1, event2, event3]},
 )
+ok = response.is_success and valid_ack(response.json(), 3)  # else count the 3 events as lost/unconfirmed
 ```
 
 The batch endpoint deduplicates by `client_event_id` when present.

@@ -16,4 +16,5 @@ async def meta():
         "jev_enabled": state.jev_enabled,
         "jev_disabled_reason": state.jev_disabled_reason,
         "config_errors": state.config_errors,
+        "task_prompt_allowlist": state.allowlist_state,
     }

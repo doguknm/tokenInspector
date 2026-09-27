@@ -3,9 +3,11 @@ import logging
 import os
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import select
 
@@ -75,6 +77,15 @@ def _log_feature_state(state: features.Features) -> None:
 app = FastAPI(title="Token Inspector", lifespan=lifespan)
 # Host allowlist blocks DNS rebinding against the loopback service.
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=features.host_list())
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """The usual 422 body without `input`/`ctx`, so a rejected prompt is never echoed (O10 F12)."""
+    detail = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(detail)})
+
+
 app.include_router(meta.router)
 app.include_router(events.router)
 tasks.register_detail_route()

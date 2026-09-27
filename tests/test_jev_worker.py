@@ -68,6 +68,7 @@ def jev(client, monkeypatch):
     monkeypatch.setenv("JEV_ENABLED", "1")
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-key")
     monkeypatch.setenv("INGEST_TOKEN", TOKEN)
+    monkeypatch.setenv("TASK_PROMPT_ALLOWED_PROJECTS", "hermes")
     features.refresh()
     clock = Clock()
     monkeypatch.setattr(jev_scorer, "now", clock.now)
@@ -80,13 +81,14 @@ def _iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-async def _task(ref, prompt="Add a tasks table with tests.", project="hermes"):
+async def _task(ref, prompt="Add a tasks table with tests.", project="hermes", hierarchy="root", root_ref=None):
     async with AsyncSessionLocal() as session:
         await session.execute(text(
-            "INSERT INTO tasks (id, project_name, session_id, turn_id, first_seen_at, last_seen_at, prompt_text, "
-            "prompt_captured_at, prompt_expires_at, created_at, updated_at) VALUES (:id, :p, 's', :id, :n, :n, :t, :n, "
-            ":e, :n, :n)"), {"id": ref, "p": project, "t": prompt, "n": _iso(START - timedelta(days=1)),
-                             "e": _iso(datetime.now(timezone.utc) + timedelta(days=20))})
+            "INSERT INTO tasks (id, project_name, session_id, turn_id, hierarchy_status, root_task_ref, first_seen_at, "
+            "last_seen_at, prompt_text, prompt_captured_at, prompt_expires_at, created_at, updated_at) VALUES (:id, :p, "
+            "'s', :id, :h, :root, :n, :n, :t, :n, :e, :n, :n)"),
+            {"id": ref, "p": project, "h": hierarchy, "root": root_ref, "t": prompt,
+             "n": _iso(START - timedelta(days=1)), "e": _iso(datetime.now(timezone.utc) + timedelta(days=20))})
         await session.commit()
     return ref
 

@@ -1,7 +1,7 @@
 # Status — Per-project prompt/JEV allowlist with clone path-deny, and a safe producer example (O10)
 
 **Started**: 2026-09-27
-**Last updated**: 2026-09-27 (plan locked after Hermes plan review r2; not started)
+**Last updated**: 2026-09-28 (implementation in progress)
 **Plan base commits**: backend `3f52fe1`, plugin `f19ffd2` (both on `feat/task-telemetry-jev-pilot`)
 **Closes**: O10 in `Plans/task-telemetry-jev-pilot/status.md` (blocks that plan's Activation Gate). O10 is marked resolved only after the final review lane passes, including the AC13 semantic checklist; the maintenance-docs step only records "docs done, pending final review" (F17)
 
@@ -26,9 +26,9 @@ _Tool / model / skill per step come from the execution plan above. Claude steps 
 | Lane | Tool (model, skill) | Status | Notes |
 |---|---|---|---|
 | database | out of scope | not applicable | No schema change; the skip reason uses `task_evaluations.error_type` |
-| backend | Claude Code (Opus 5.5, direct) | not started | Part A (A1–A5) then Part B (B1–B4) per backend.md. No prod flag, deploy, plugin install or gateway restart without user approval |
+| backend | Claude Code (Opus 5.5, direct) | in progress — Part A (A1–A5) done 2026-09-28, local suite green; Part B next | Part A (A1–A5) then Part B (B1–B4) per backend.md. No prod flag, deploy, plugin install or gateway restart without user approval |
 | frontend | out of scope | not applicable | No UI change |
-| tests-other | Claude Code (Opus 5.5, direct) | not started | Written with each backend step; mutation checks PM1–PM24, BM1–BM19, SM1–SM7 with exact sites and isolated fixtures (AC18). Plugin suite runs locally **and** on hermes (temp clone of the pushed branch) |
+| tests-other | Claude Code (Opus 5.5, direct) | in progress — existing backend tests adapted to the allowed path (fixtures only) | Written with each backend step; mutation checks PM1–PM24, BM1–BM19, SM1–SM7 with exact sites and isolated fixtures (AC18). Plugin suite runs locally **and** on hermes (temp clone of the pushed branch) |
 | tests-e2e | out of scope | not applicable | |
 | maintenance-docs | Claude Code (Opus 5.5, direct) | not started | backend.md "Documentation" (AC13). Must be done before the Hermes code review |
 | hermes plan review | Hermes (driven by Claude Code) | done — r1 17/17 fixed, r2 10/10 fixed; plan locked | Max 2 rounds reached; no round 3 |

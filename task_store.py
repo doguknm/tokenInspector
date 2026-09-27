@@ -21,6 +21,8 @@ from sqlalchemy import text
 from redaction import REDACTION_VERSION, scrub_text
 
 APPROVED_METHODS = frozenset({"request-shape-v1"})
+# Eligibility marker set by the producer only on an authorized root prompt (O10 F1).
+PROMPT_ELIGIBILITY = "v1-allowed"
 SESSION_END_REASONS = ("end", "shutdown", "session_boundary", "new_session")
 _INVALID_TURN_IDS = frozenset({"", "unknown", "session"})
 _TS = "COALESCE(occurred_at, recorded_at)"
@@ -298,7 +300,32 @@ async def _store_prompt(db, ref: str, body, event, now_dt: datetime, redaction: 
     return bool(result.rowcount)
 
 
-async def on_event_inserted(db, event, body, *, capture_enabled: bool, redaction: dict) -> dict:
+async def prompt_root_eligible(db, ref: str, allowed: frozenset) -> bool:
+    """Single allowlist + proven-root check for ingest and JEV (O10 AC7, r2 F6).
+
+    A proven root is `hierarchy_status = 'root'`, `parent_task_ref IS NULL` and a `root_task_ref`
+    that is NULL or the task itself (never another task). No parent row is read.
+    """
+    row = (
+        await db.execute(
+            text("SELECT project_name, hierarchy_status, parent_task_ref, root_task_ref FROM tasks WHERE id = :id"),
+            {"id": ref},
+        )
+    ).first()
+    if row is None:
+        return False
+    project, hierarchy, parent_ref, root_ref = row
+    return (
+        project in allowed
+        and hierarchy == "root"
+        and parent_ref is None
+        and (root_ref is None or root_ref == ref)
+    )
+
+
+async def on_event_inserted(
+    db, event, body, *, capture_enabled: bool, redaction: dict, allowed_projects: frozenset = frozenset()
+) -> dict:
     """Task derivation for one newly inserted (non-duplicate) event, in the ingest transaction."""
     now_dt = datetime.now(timezone.utc)
     now = _fmt(now_dt)
@@ -307,9 +334,24 @@ async def on_event_inserted(db, event, body, *, capture_enabled: bool, redaction
     if is_task_turn(event.event_type, event.turn_id):
         ref = await _upsert_task(db, event, body, session_id, now)
         outcome["task_ref"] = ref
+        # A task that became child loses a prompt stored while it was a root (r2 F1/F7).
+        # prompt_captured_at stays set, so _store_prompt never re-stores it.
+        nulled = await db.execute(
+            text(
+                "UPDATE tasks SET prompt_text = NULL, prompt_purged_at = :now, updated_at = :now "
+                "WHERE id = :id AND hierarchy_status = 'child' AND prompt_text IS NOT NULL"
+            ),
+            {"now": now, "id": ref},
+        )
+        if nulled.rowcount:
+            outcome["prompt"] = "purged_child"
         if body.task_prompt_text:
             if not capture_enabled:
                 outcome["prompt"] = "discarded_disabled"
+            elif getattr(body, "prompt_eligibility", None) != PROMPT_ELIGIBILITY:
+                outcome["prompt"] = "discarded_no_eligibility"
+            elif not await prompt_root_eligible(db, ref, allowed_projects):
+                outcome["prompt"] = "discarded_not_eligible"
             elif await _store_prompt(db, ref, body, event, now_dt, redaction):
                 outcome["prompt"] = "stored"
             else:

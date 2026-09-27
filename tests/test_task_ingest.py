@@ -13,6 +13,7 @@ from database import AsyncSessionLocal
 TOKEN = "i" * 24
 H = {"X-Project-Name": "hermes"}
 RS1 = {"complexity_version": "request-shape-v1"}
+ROOT = {"task_hierarchy": "root", "prompt_eligibility": "v1-allowed"}  # O10: allowed-path prompt fields
 
 
 def _ts(second: int, minute: int = 0) -> str:
@@ -41,6 +42,7 @@ async def _post(client, *events, headers=H):
 def _enable_capture(monkeypatch):
     monkeypatch.setenv("STORE_TASK_PROMPTS", "1")
     monkeypatch.setenv("INGEST_TOKEN", TOKEN)
+    monkeypatch.setenv("TASK_PROMPT_ALLOWED_PROJECTS", "hermes")
     features.refresh()
     return {**H, "X-Ingest-Token": TOKEN}
 
@@ -173,7 +175,7 @@ async def test_capture_stores_scrubbed_prompt_in_tasks_only(client, monkeypatch)
     now = datetime.now(timezone.utc)
     captured = (now - timedelta(minutes=1)).isoformat()
     secret = "sk-" + "a" * 24
-    await _post(client, _ev("a", task_prompt_text=f"fix it with {secret}", task_prompt_captured_at=captured),
+    await _post(client, _ev("a", task_prompt_text=f"fix it with {secret}", task_prompt_captured_at=captured, **ROOT),
                 headers=headers)
     (task,) = await _tasks()
     assert secret not in task["prompt_text"] and "[REDACTED:secret]" in task["prompt_text"]
@@ -187,7 +189,7 @@ async def test_capture_stores_scrubbed_prompt_in_tasks_only(client, monkeypatch)
             "SELECT COUNT(*) FROM token_events WHERE prompt_text IS NOT NULL OR prompt_hash IS NOT NULL"))).scalar()
     assert leaked == 0
 
-    await _post(client, _ev("b", task_prompt_text="second prompt", task_prompt_captured_at=captured), headers=headers)
+    await _post(client, _ev("b", task_prompt_text="second prompt", task_prompt_captured_at=captured, **ROOT), headers=headers)
     (task2,) = await _tasks()
     assert task2["prompt_text"] == task["prompt_text"]  # first write wins
     features.refresh()
@@ -196,11 +198,11 @@ async def test_capture_stores_scrubbed_prompt_in_tasks_only(client, monkeypatch)
 async def test_purged_prompt_is_never_repopulated(client, monkeypatch):
     headers = _enable_capture(monkeypatch)
     captured = datetime.now(timezone.utc).isoformat()
-    await _post(client, _ev("a", task_prompt_text="one", task_prompt_captured_at=captured), headers=headers)
+    await _post(client, _ev("a", task_prompt_text="one", task_prompt_captured_at=captured, **ROOT), headers=headers)
     async with AsyncSessionLocal() as session:
         await session.execute(text("UPDATE tasks SET prompt_text = NULL, prompt_purged_at = '2026-09-27T00:00:00Z'"))
         await session.commit()
-    await _post(client, _ev("b", task_prompt_text="two", task_prompt_captured_at=captured), headers=headers)
+    await _post(client, _ev("b", task_prompt_text="two", task_prompt_captured_at=captured, **ROOT), headers=headers)
     (task,) = await _tasks()
     assert task["prompt_text"] is None
     features.refresh()
@@ -209,10 +211,10 @@ async def test_purged_prompt_is_never_repopulated(client, monkeypatch):
 async def test_old_capture_is_discarded_and_future_capture_is_clamped(client, monkeypatch):
     headers = _enable_capture(monkeypatch)
     old = (datetime.now(timezone.utc) - timedelta(days=30, minutes=1)).isoformat()
-    await _post(client, _ev("a", turn="s1:t:1", task_prompt_text="old", task_prompt_captured_at=old), headers=headers)
+    await _post(client, _ev("a", turn="s1:t:1", task_prompt_text="old", task_prompt_captured_at=old, **ROOT), headers=headers)
     future = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
     await _post(client, _ev("b", turn="s1:t:2", occurred_at=_ts(2), task_prompt_text="new",
-                            task_prompt_captured_at=future), headers=headers)
+                            task_prompt_captured_at=future, **ROOT), headers=headers)
     tasks = {t["turn_id"]: t for t in await _tasks()}
     assert tasks["s1:t:1"]["prompt_text"] is None and tasks["s1:t:1"]["prompt_captured_at"] is None
     captured = datetime.fromisoformat(tasks["s1:t:2"]["prompt_captured_at"].replace("Z", "+00:00"))
@@ -223,7 +225,7 @@ async def test_old_capture_is_discarded_and_future_capture_is_clamped(client, mo
 async def test_long_prompt_is_truncated_with_original_length(client, monkeypatch):
     headers = _enable_capture(monkeypatch)
     await _post(client, _ev("a", task_prompt_text="x" * 40_000,
-                            task_prompt_captured_at=datetime.now(timezone.utc).isoformat()), headers=headers)
+                            task_prompt_captured_at=datetime.now(timezone.utc).isoformat(), **ROOT), headers=headers)
     (task,) = await _tasks()
     assert (len(task["prompt_text"]), task["prompt_length"], task["prompt_truncated"]) == (32_000, 40_000, 1)
     features.refresh()

@@ -2,15 +2,32 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
 import httpx
 
 
+# Never sent by this client: prompt text and free-form error text (O10 AC11).
+SENSITIVE_FIELDS = ("prompt_text", "task_prompt_text", "error_message")
+_ACK_KEYS = ("inserted", "duplicates", "rejected")
+
+
 def sha256_prompt_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def valid_ack(body: Any, n: int) -> bool:
+    """A batch ack: non-bool, non-negative int inserted/duplicates/rejected summing to the batch size."""
+    if not isinstance(body, dict):
+        return False
+    values = [body.get(key) for key in _ACK_KEYS]
+    if not all(type(v) is int and v >= 0 for v in values):
+        return False
+    return sum(values) == n
 
 
 @dataclass
@@ -46,7 +63,6 @@ class TokenInspectorEvent:
     http_status: Optional[int] = None
     finish_reason: Optional[str] = None
     error_type: Optional[str] = None
-    error_message: Optional[str] = None
     attempt: int = 1
     retry_count: int = 0
     ttft_ms: Optional[int] = None
@@ -57,7 +73,6 @@ class TokenInspectorEvent:
     occurred_at: Optional[str] = None
     prompt_hash: Optional[str] = None
     prompt_length: Optional[int] = None
-    prompt_text: Optional[str] = None
     complexity: Optional[int] = None
 
     def to_payload(self) -> dict[str, Any]:
@@ -76,6 +91,7 @@ class TokenInspectorClient:
         batch_max: int = 50,
         flush_interval_seconds: float = 1.0,
         timeout_seconds: float = 1.5,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
     ) -> None:
         self.project_name = project_name
         self.base_url = base_url.rstrip("/")
@@ -86,8 +102,28 @@ class TokenInspectorClient:
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=max(1, queue_max))
         self._worker: Optional[asyncio.Task] = None
         self._client: Optional[httpx.AsyncClient] = None
+        self._transport = transport
         self._closed = False
-        self.dropped_events = 0
+        # Every event passed to post_event ends in exactly one counter.
+        self.delivered_events = 0
+        # confirmed loss
+        self.dropped_events = 0  # queue full
+        self.serialization_failed = 0
+        self.rejected_events = 0
+        self.http_failures = 0
+        self.dropped_on_close = 0
+        # unconfirmed delivery: the server may have committed these
+        self.transport_unconfirmed = 0
+        self.malformed_acks = 0
+
+    @property
+    def lost_events(self) -> int:
+        return (self.dropped_events + self.serialization_failed + self.rejected_events
+                + self.http_failures + self.dropped_on_close)
+
+    @property
+    def unconfirmed_events(self) -> int:
+        return self.transport_unconfirmed + self.malformed_acks
 
     def _headers(self) -> dict[str, str]:
         headers = {"X-Project-Name": self.project_name}
@@ -105,8 +141,24 @@ class TokenInspectorClient:
 
     async def post_event(self, event: TokenInspectorEvent | dict[str, Any]) -> bool:
         if self._closed:
+            self.dropped_on_close += 1
             return False
-        payload = event.to_payload() if isinstance(event, TokenInspectorEvent) else dict(event)
+        try:
+            # A stable id, written back to the caller's object, so a resend reuses it.
+            if isinstance(event, TokenInspectorEvent):
+                if not event.client_event_id:
+                    event.client_event_id = uuid.uuid4().hex
+                payload = event.to_payload()
+            else:
+                if not (event.get("client_event_id") or event.get("event_id")):
+                    event["client_event_id"] = uuid.uuid4().hex
+                payload = dict(event)
+            for key in SENSITIVE_FIELDS:
+                payload.pop(key, None)
+            json.dumps(payload)  # a payload that cannot be serialized never poisons a batch
+        except Exception:
+            self.serialization_failed += 1
+            return False
         try:
             self._queue.put_nowait(payload)
         except (asyncio.QueueFull, Exception):
@@ -124,31 +176,52 @@ class TokenInspectorClient:
     async def _send(self, batch: list[dict[str, Any]]) -> None:
         if not batch:
             return
+        n = len(batch)
         try:
             if self._client is None:
-                self._client = httpx.AsyncClient(timeout=self.timeout_seconds)
-            await self._client.post(
+                self._client = httpx.AsyncClient(timeout=self.timeout_seconds, transport=self._transport)
+            response = await self._client.post(
                 f"{self.base_url}/api/events/batch",
                 headers=self._headers(),
                 json={"events": batch},
             )
+        except asyncio.CancelledError:
+            self.transport_unconfirmed += n
+            raise
         except Exception:
-            pass
+            self.transport_unconfirmed += n
+            return
+        if not 200 <= response.status_code < 300:
+            self.http_failures += n
+            return
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        if not valid_ack(body, n):
+            self.malformed_acks += n
+            return
+        self.delivered_events += body["inserted"] + body["duplicates"]
+        self.rejected_events += body["rejected"]
 
     async def _drain(self) -> None:
         while not self._closed or not self._queue.empty():
             batch: list[dict[str, Any]] = []
             deadline = time.monotonic() + self.flush_interval_seconds
-            while len(batch) < self.batch_max:
-                timeout = max(0.0, deadline - time.monotonic())
-                try:
-                    item = await asyncio.wait_for(self._queue.get(), timeout=timeout)
-                    batch.append(item)
-                    self._queue.task_done()
-                except asyncio.TimeoutError:
-                    break
-                except Exception:
-                    break
+            try:
+                while len(batch) < self.batch_max:
+                    timeout = max(0.0, deadline - time.monotonic())
+                    try:
+                        item = await asyncio.wait_for(self._queue.get(), timeout=timeout)
+                        batch.append(item)
+                        self._queue.task_done()
+                    except asyncio.TimeoutError:
+                        break
+                    except Exception:
+                        break
+            except asyncio.CancelledError:
+                self.dropped_on_close += len(batch)  # collected but never sent
+                raise
             await self._send(batch)
             if not batch and self._closed:
                 break
@@ -159,9 +232,12 @@ class TokenInspectorClient:
         self._closed = True
         if self._worker is not None:
             try:
-                await asyncio.wait_for(self._worker, timeout=timeout)
-            except Exception:
+                await asyncio.wait_for(self._worker, timeout=timeout)  # drains, then cancels on timeout
+            except (Exception, asyncio.CancelledError):
                 self._worker.cancel()
+        while not self._queue.empty():  # still queued after the drain window
+            self._queue.get_nowait()
+            self.dropped_on_close += 1
         if self._client is not None:
             try:
                 await self._client.aclose()

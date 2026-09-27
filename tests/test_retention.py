@@ -131,7 +131,7 @@ async def test_failures_surface_in_status(client, monkeypatch):
 
 
 def _state(**env):
-    return features.evaluate({"INGEST_TOKEN": TOKEN, **env})
+    return features.evaluate({"INGEST_TOKEN": TOKEN, "TASK_PROMPT_ALLOWED_PROJECTS": "hermes", **env})
 
 
 @pytest.mark.parametrize(

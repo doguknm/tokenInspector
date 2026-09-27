@@ -90,6 +90,8 @@ class EventIn(BaseModel):
     parent_turn_id: Optional[str] = Field(default=None, max_length=128)
     task_prompt_text: Optional[str] = Field(default=None, max_length=200_000)
     task_prompt_captured_at: Optional[str] = None
+    # Compared by equality and never stored; any value is accepted so metadata is never rejected.
+    prompt_eligibility: Optional[str] = None
 
     request_system_chars: Optional[int] = Field(default=None, ge=0)
     request_history_chars: Optional[int] = Field(default=None, ge=0)
@@ -170,6 +172,16 @@ def _clean_tags(tags: dict[str, Any]) -> str | None:
     if len(encoded.encode("utf-8")) > 512:
         raise ValueError("tags must encode to at most 512 bytes")
     return encoded if clean else None
+
+
+def _error_text(exc: Exception) -> str:
+    """Location and type only: a validation error never echoes the input (O10 F12)."""
+    if isinstance(exc, ValidationError):
+        return "; ".join(
+            f"{'.'.join(map(str, e['loc']))}:{e['type']}"
+            for e in exc.errors(include_input=False, include_url=False)
+        )
+    return str(exc)
 
 
 def _raw_prompts_enabled() -> bool:
@@ -336,6 +348,7 @@ async def _derive_task(session: AsyncSession, stored: TokenEvent, body: EventIn)
         body,
         capture_enabled=features.current().capture_enabled,
         redaction=features.redaction_options(),
+        allowed_projects=features.current().allowed_projects,
     )
 
 
@@ -396,7 +409,7 @@ async def create_events_batch(
                     "client_event_id": raw.get("client_event_id") or raw.get("event_id"),
                     "duplicate": False,
                     "rejected": True,
-                    "error": str(exc)[:512],
+                    "error": _error_text(exc)[:512],
                 }
             )
 

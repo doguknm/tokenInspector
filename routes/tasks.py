@@ -205,10 +205,15 @@ async def list_tasks(
     evaluated: Optional[bool] = None,
     has_prompt: Optional[bool] = None,
     root_only: bool = False,
+    allowed_only: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
+    x_ingest_token: Optional[str] = Header(default=None, alias="X-Ingest-Token"),
+    origin: Optional[str] = Header(default=None),
     session: AsyncSession = Depends(get_session),
 ):
+    if allowed_only:  # allowlist membership is never probeable without the token
+        await require_sensitive_auth(x_ingest_token=x_ingest_token, origin=origin)
     days = min(max(days, 1), 3650)
     now = _fmt(datetime.now(timezone.utc))
     cutoff = _fmt(datetime.now(timezone.utc) - timedelta(days=days))
@@ -226,6 +231,11 @@ async def list_tasks(
         where.append(retained if has_prompt else f"NOT {retained}")
     if root_only:
         where.append("t.hierarchy_status = 'root'")
+    if allowed_only:
+        allowed = sorted(features.current().allowed_projects)
+        names = {f"ap{i}": name for i, name in enumerate(allowed)}
+        where.append(f"t.project_name IN ({', '.join(':' + k for k in names)})" if names else "0")
+        params.update(names)
     clause = " AND ".join(where)
     total = (await session.execute(text(f"SELECT COUNT(*) FROM tasks t WHERE {clause}"), params)).scalar_one()
     rows = [
@@ -270,6 +280,9 @@ async def _skip_reason(session: AsyncSession, ref: str, now: str) -> Optional[st
         return "not_found"
     if row["project_name"] == jev_scorer.EVALUATOR_PROJECT:
         return "evaluator_task"
+    reason = await jev_scorer.project_gate(session, ref)
+    if reason:
+        return reason
     state = prompt_state(dict(row), now)
     if state != "retained":
         return {"none": "no_prompt", "expired": "prompt_expired", "purged": "prompt_purged"}[state]

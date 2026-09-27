@@ -7,12 +7,19 @@ itself still starts. The would-be configuration is always evaluated and reported
 
 from __future__ import annotations
 
+import logging
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
+log = logging.getLogger(__name__)
+
 TRUE = {"1", "true", "yes", "on"}
+# Exactly the fixed points of the producer's normalize_project_name; never pass an entry through
+# that function, because it falls back to "hermes" on garbage.
+_PROJECT_ENTRY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 MIN_TOKEN_CHARS = 16
 PURGE_INTERVAL_DEFAULT_S = 21600
 PURGE_INTERVAL_MAX_S = 21600
@@ -43,6 +50,8 @@ class Features:
     purge_interval_raw: Optional[str]
     budget: Optional[Budget]
     config_errors: list[dict[str, str]] = field(default_factory=list)
+    allowed_projects: frozenset[str] = frozenset()
+    allowlist_state: str = "empty"
 
 
 def _truthy(value: Optional[str]) -> bool:
@@ -65,6 +74,20 @@ def purge_interval(env: Mapping[str, str]) -> tuple[Optional[int], Optional[str]
     return (value if 0 <= value <= PURGE_INTERVAL_MAX_S else None), raw
 
 
+def allowed_projects(env: Mapping[str, str]) -> tuple[frozenset[str], bool]:
+    """Strictly normalized TASK_PROMPT_ALLOWED_PROJECTS and whether any entry was dropped."""
+    kept, dropped = set(), False
+    for raw in (env.get("TASK_PROMPT_ALLOWED_PROJECTS") or "").split(","):
+        entry = raw.strip().lower()
+        if not entry:
+            continue
+        if _PROJECT_ENTRY_RE.fullmatch(entry):
+            kept.add(entry)
+        else:
+            dropped = True
+    return frozenset(kept), dropped
+
+
 def budget(env: Mapping[str, str]) -> Optional[Budget]:
     try:
         day = float(env.get("JEV_DAILY_BUDGET_USD", JEV_DEFAULTS["JEV_DAILY_BUDGET_USD"]))
@@ -85,6 +108,9 @@ def evaluate(env: Optional[Mapping[str, str]] = None) -> Features:
     errors: list[dict[str, str]] = []
     token_ok = _token_ok(env)
     interval, raw_interval = purge_interval(env)
+    allowed, dropped = allowed_projects(env)
+    if dropped:
+        log.warning("invalid allowlist entries ignored")  # no count, no names (r2 F10)
 
     capture_errors = []
     if not token_ok:
@@ -92,6 +118,9 @@ def evaluate(env: Optional[Mapping[str, str]] = None) -> Features:
     # 0 is a retention-loop setting, never a valid capture configuration.
     if interval is None or interval == 0:
         capture_errors.append("invalid_purge_interval")
+    # One list governs capture and JEV; appended last so existing precedence is kept.
+    if not allowed:
+        capture_errors.append("no_allowed_projects")
     errors += [{"feature": "capture", "error": e} for e in capture_errors]
 
     credentials = bool((env.get("AI_GATEWAY_API_KEY") or "").strip())
@@ -103,6 +132,8 @@ def evaluate(env: Optional[Mapping[str, str]] = None) -> Features:
         jev_errors.append("ingest_token_missing")
     if jev_budget is None:
         jev_errors.append("invalid_budget_config")
+    if not allowed:
+        jev_errors.append("no_allowed_projects")
     errors += [{"feature": "jev", "error": e} for e in jev_errors]
 
     if not _truthy(env.get("STORE_TASK_PROMPTS")):
@@ -129,6 +160,8 @@ def evaluate(env: Optional[Mapping[str, str]] = None) -> Features:
         purge_interval_raw=raw_interval,
         budget=jev_budget,
         config_errors=errors,
+        allowed_projects=allowed,
+        allowlist_state="configured" if allowed else "empty",
     )
 
 

@@ -11,7 +11,7 @@ from auth import require_sensitive_auth
 from main import app, lifespan
 
 TOKEN = "t" * 24
-GOOD = {"INGEST_TOKEN": TOKEN, "AI_GATEWAY_API_KEY": "key"}
+GOOD = {"INGEST_TOKEN": TOKEN, "AI_GATEWAY_API_KEY": "key", "TASK_PROMPT_ALLOWED_PROJECTS": "hermes"}
 
 
 def _sensitive_app():
@@ -66,6 +66,7 @@ async def test_meta_preflight_with_flags_off_and_valid_config(client, monkeypatc
         "jev_enabled": False,
         "jev_disabled_reason": "not_enabled",
         "config_errors": [],
+        "task_prompt_allowlist": "configured",
     }
 
 
@@ -73,6 +74,7 @@ async def test_meta_lists_config_errors_even_with_flags_off(client, monkeypatch)
     monkeypatch.setenv("INGEST_TOKEN", "short")
     monkeypatch.delenv("AI_GATEWAY_API_KEY", raising=False)
     monkeypatch.setenv("JEV_DAILY_BUDGET_USD", "5")  # above the monthly ceiling
+    monkeypatch.setenv("TASK_PROMPT_ALLOWED_PROJECTS", "hermes")  # the empty-list error is covered separately
     features.refresh()
     body = (await client.get("/api/meta")).json()
     assert body["task_prompt_capture_disabled_reason"] == "not_enabled"

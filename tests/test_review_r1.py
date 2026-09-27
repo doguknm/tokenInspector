@@ -121,13 +121,15 @@ async def test_schema_matches_independent_expectations(tmp_path):
 def _capture_on(monkeypatch):
     monkeypatch.setenv("STORE_TASK_PROMPTS", "1")
     monkeypatch.setenv("INGEST_TOKEN", TOKEN)
+    monkeypatch.setenv("TASK_PROMPT_ALLOWED_PROJECTS", "hermes")
     features.refresh()
     return {**H, "X-Ingest-Token": TOKEN}
 
 
 def _ev(cid, turn, **extra):
     return {"client_event_id": cid, "model": "m", "session_id": "s1", "turn_id": turn,
-            "occurred_at": "2026-09-20T10:00:00Z", **extra}
+            "occurred_at": "2026-09-20T10:00:00Z", "task_hierarchy": "root", "prompt_eligibility": "v1-allowed",
+            **extra}
 
 
 async def test_batch_capture_scrubs_discards_expired_and_respects_the_gate(client, monkeypatch):
@@ -276,6 +278,7 @@ def jev(client, monkeypatch):
     monkeypatch.setenv("JEV_ENABLED", "1")
     monkeypatch.setenv("AI_GATEWAY_API_KEY", "k")
     monkeypatch.setenv("INGEST_TOKEN", TOKEN)
+    monkeypatch.setenv("TASK_PROMPT_ALLOWED_PROJECTS", "hermes")
     features.refresh()
     clock = Clock()
     monkeypatch.setattr(jev_scorer, "now", clock.now)
@@ -285,9 +288,10 @@ def jev(client, monkeypatch):
 
 
 async def _task(ref, expires):
-    await _exec("INSERT INTO tasks (id, project_name, session_id, turn_id, first_seen_at, last_seen_at, prompt_text, "
-                "prompt_captured_at, prompt_expires_at, created_at, updated_at) VALUES (:id, 'hermes', 's', :id, :n, :n, "
-                "'Add tests.', :n, :e, :n, :n)", id=ref, n=_iso(START - timedelta(days=1)), e=_iso(expires))
+    await _exec("INSERT INTO tasks (id, project_name, session_id, turn_id, hierarchy_status, first_seen_at, "
+                "last_seen_at, prompt_text, prompt_captured_at, prompt_expires_at, created_at, updated_at) VALUES "
+                "(:id, 'hermes', 's', :id, 'root', :n, :n, 'Add tests.', :n, :e, :n, :n)",
+                id=ref, n=_iso(START - timedelta(days=1)), e=_iso(expires))
 
 
 async def _evaluate(client, refs):

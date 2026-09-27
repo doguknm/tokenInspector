@@ -26,6 +26,7 @@ import httpx
 from sqlalchemy import text
 
 import features
+import task_store
 from database import AsyncSessionLocal
 
 log = logging.getLogger(__name__)
@@ -293,6 +294,13 @@ async def _complete(session, attempt: dict, *, status: str, http_status: Optiona
     await session.commit()
 
 
+async def project_gate(session, ref: str) -> Optional[str]:
+    """`project_not_allowed` unless the task is an allowlisted proven root; reads the list at call time."""
+    if await task_store.prompt_root_eligible(session, ref, features.current().allowed_projects):
+        return None
+    return "project_not_allowed"
+
+
 async def evaluate_task(session, run_id: str, ref: str, config: features.Budget, api_key: str) -> TaskOutcome:
     row = (
         await session.execute(
@@ -304,6 +312,9 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
         return TaskOutcome("skipped", error_type="not_found")
     if row[0] == EVALUATOR_PROJECT:
         return TaskOutcome("skipped", error_type="evaluator_task")
+    # Redundant with the per-attempt gate below; gives the reason ahead of no_prompt/already_scored.
+    if await project_gate(session, ref):
+        return TaskOutcome("skipped", error_type="project_not_allowed")
     if row[3] is not None:
         return TaskOutcome("skipped", error_type="prompt_purged")
     if row[1] is None:
@@ -349,6 +360,10 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
             outcome.error_type = "prompt_expired" if fresh is not None and fresh[2] is None else "prompt_purged"
             outcome.status = "skipped" if not outcome.attempts else "error"
             return outcome  # retention ended during a wait: the text is never sent
+        if await project_gate(session, ref):  # before every attempt: first try, retry and fallback
+            outcome.error_type = "project_not_allowed"
+            outcome.status = "skipped" if not outcome.attempts else "error"
+            return outcome
         state = fresh[0]
         body = request_body(state, provider)
         totals = await spend(session, now())

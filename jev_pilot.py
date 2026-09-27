@@ -246,7 +246,7 @@ class Api:
     def all_root_tasks(self) -> list[dict]:
         items, page = [], 1
         while True:
-            body = self._get("/api/tasks", days=3650, root_only="true", page=page, page_size=200)
+            body = self._get("/api/tasks", days=3650, root_only="true", allowed_only="true", page=page, page_size=200)
             items += body["items"]
             if page * body["page_size"] >= body["total"]:
                 return items
