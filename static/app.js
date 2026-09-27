@@ -93,7 +93,9 @@ async function loadOverview() {
     document.getElementById('stat-' + t.stat + '-share').textContent =
       allTokens ? (totals[t.key] / allTokens * 100).toFixed(1) + '% of total' : '';
   });
-  document.getElementById('stat-cost').textContent = fmt.cost(summary.total_cost_usd);
+  const unpricedN = summary.unpriced_event_count || 0;
+  document.getElementById('stat-cost').textContent = unpricedN && !(summary.total_cost_usd > 0)
+    ? 'unpriced' : fmt.cost(summary.total_cost_usd) + (unpricedN ? ` (+${fmt.num(unpricedN)} unpriced)` : '');
   document.getElementById('stat-projects').textContent = fmt.num(summary.unique_projects);
 
   // timeseries: stacked token types + cost line
@@ -142,12 +144,19 @@ async function loadOverview() {
   const tbody = document.querySelector('#table-projects tbody');
   tbody.innerHTML = byProject.map(r => `
     <tr>
-      <td>${r.project_name}</td>
+      <td>${esc(r.project_name)}</td>
       <td>${fmt.num(r.event_count)}</td>
       ${tokenCells(r)}
-      <td>${fmt.cost(r.total_cost_usd)}</td>
+      <td>${costCell(r)}</td>
       <td>${fmt.ms(r.avg_process_time_ms)}</td>
     </tr>`).join('');
+}
+
+// Unpriced events are never shown as $0: all-unpriced → badge, mixed → cost + count badge.
+function costCell(r) {
+  const n = r.unpriced_event_count || 0;
+  if (n && !(r.total_cost_usd > 0)) return '<span class="badge badge-muted">unpriced</span>';
+  return fmt.cost(r.total_cost_usd) + (n ? ` <span class="badge badge-muted">+${fmt.num(n)} unpriced</span>` : '');
 }
 
 // ── Projects ──────────────────────────────────────────────────────────────────
@@ -160,9 +169,9 @@ async function loadProjectsView() {
   const inventoryBody = document.querySelector('#table-project-inventory tbody');
   inventoryBody.innerHTML = inventory.map(r => `
     <tr>
-      <td><code>${r.project_name}</code></td>
-      <td>${r.directory_name}</td>
-      <td>${r.discovery_source}</td>
+      <td><code>${esc(r.project_name)}</code></td>
+      <td>${esc(r.directory_name)}</td>
+      <td>${esc(r.discovery_source)}</td>
       <td><span class="badge ${r.has_telemetry ? 'badge-success' : ''}">${r.has_telemetry ? 'observed' : 'inventory only'}</span></td>
       <td>${fmt.num(r.event_count)}</td>
       ${tokenCells(r)}
@@ -172,10 +181,10 @@ async function loadProjectsView() {
   const observedBody = document.querySelector('#table-observed-projects tbody');
   observedBody.innerHTML = byProject.map(r => `
     <tr>
-      <td><code>${r.project_name}</code></td>
+      <td><code>${esc(r.project_name)}</code></td>
       <td>${fmt.num(r.event_count)}</td>
       ${tokenCells(r)}
-      <td>${fmt.cost(r.total_cost_usd)}</td>
+      <td>${costCell(r)}</td>
       <td>${fmt.ms(r.avg_process_time_ms)}</td>
     </tr>`).join('');
 
@@ -183,8 +192,8 @@ async function loadProjectsView() {
   const current = sel.value;
   const inventoryNames = new Set(inventory.map(r => r.project_name));
   const observedOnly = byProject.filter(r => !inventoryNames.has(r.project_name));
-  const knownOptions = inventory.map(r => `<option value="${r.project_name}">${r.project_name} (${r.directory_name})</option>`).join('');
-  const observedOptions = observedOnly.map(r => `<option value="${r.project_name}">${r.project_name}</option>`).join('');
+  const knownOptions = inventory.map(r => `<option value="${esc(r.project_name)}">${esc(r.project_name)} (${esc(r.directory_name)})</option>`).join('');
+  const observedOptions = observedOnly.map(r => `<option value="${esc(r.project_name)}">${esc(r.project_name)}</option>`).join('');
   sel.innerHTML = '<option value="">Select project…</option>' +
     `<optgroup label="Known repositories">${knownOptions}</optgroup>` +
     (observedOptions ? `<optgroup label="Observed only">${observedOptions}</optgroup>` : '');
@@ -267,8 +276,8 @@ async function loadEventLog() {
   tbody.innerHTML = data.items.map(r => `
     <tr>
       <td>${fmt.date(r.recorded_at)}</td>
-      <td><code>${r.model}</code></td>
-      <td>${r.role || '—'}</td>
+      <td><code>${esc(r.model)}</code></td>
+      <td>${r.role ? esc(r.role) : '—'}</td>
       ${TOKEN_TYPES.map(t => `<td>${fmt.num(r[t.key])}</td>`).join('')}
       <td>${fmt.cost(r.estimated_cost_usd)}</td>
       <td>${fmt.ms(r.process_time_ms)}</td>
@@ -307,12 +316,12 @@ async function loadModels() {
   const tbody = document.querySelector('#table-models tbody');
   tbody.innerHTML = data.map(r => `
     <tr>
-      <td><code>${r.model}</code></td>
+      <td><code>${esc(r.model)}</code></td>
       <td>${fmt.num(r.event_count)}</td>
       ${tokenCells(r)}
       <td>${fmt.ms(r.avg_process_time_ms)}</td>
-      <td>${fmt.cost(r.total_cost_usd)}</td>
-      <td>${r.cost_per_1k_tokens != null ? '$' + r.cost_per_1k_tokens.toFixed(4) : '—'}</td>
+      <td>${costCell(r)}</td>
+      <td>${r.cost_per_1k_tokens != null && !(r.unpriced_event_count && !(r.total_cost_usd > 0)) ? '$' + r.cost_per_1k_tokens.toFixed(4) : '—'}</td>
     </tr>`).join('');
 }
 
@@ -321,14 +330,14 @@ async function loadSettings() {
   const data = await api('/api/settings/pricing');
   const tbody = document.querySelector('#table-pricing tbody');
   tbody.innerHTML = data.map(r => `
-    <tr data-model="${r.model}">
-      <td><code>${r.model}</code></td>
+    <tr data-model="${esc(r.model)}">
+      <td><code>${esc(r.model)}</code></td>
       <td class="editable-cell"><input type="number" step="any" value="${r.input_price_per_1m}" /></td>
       <td class="editable-cell"><input type="number" step="any" value="${r.output_price_per_1m}" /></td>
       <td>${fmt.date(r.updated_at)}</td>
       <td>
-        <button onclick="savePricing('${r.model}', this)">Save</button>
-        <button class="danger" onclick="deletePricing('${r.model}', this)">Delete</button>
+        <button onclick="savePricing(this.closest('tr').dataset.model, this)">Save</button>
+        <button class="danger" onclick="deletePricing(this.closest('tr').dataset.model, this)">Delete</button>
       </td>
     </tr>`).join('');
 }
@@ -522,10 +531,10 @@ async function loadComplexity() {
     noRecs.classList.add('hidden');
     tbody.innerHTML = recs.map(r => `
       <tr>
-        <td>${r.role}</td>
-        <td>C${r.complexity}</td>
-        <td><code>${r.most_used_model}</code></td>
-        <td><code>${r.recommended_model}</code></td>
+        <td>${esc(r.role)}</td>
+        <td>C${esc(r.complexity)}</td>
+        <td><code>${esc(r.most_used_model)}</code></td>
+        <td><code>${esc(r.recommended_model)}</code></td>
         <td style="color:#22c55e;">−${r.estimated_savings_pct}%</td>
         <td>${fmt.num(r.data_points)}</td>
       </tr>`).join('');

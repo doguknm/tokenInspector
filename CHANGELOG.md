@@ -16,6 +16,7 @@ All notable user-visible and operational changes are documented here.
 
 ### Fixed
 
+- Dashboard: models/projects that are fully unpriced show an `unpriced` badge instead of `$0.0000`, and mixed rows show the unpriced count. Project, model, role and pricing names are HTML-escaped everywhere, and the pricing buttons read the model from `data-model`.
 - The app lifespan disposes the database engine on shutdown, so the process no longer hangs at exit on an open aiosqlite connection.
 
 - Privacy-first single and batch lifecycle ingest with correlation metadata.
