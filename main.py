@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import select
 
 import features
+import jev_scorer
 import retention
 from database import AsyncSessionLocal, DB_PATH, init_db
 from models import PricingRule, SEED_PRICING, _now
@@ -34,6 +35,8 @@ async def lifespan(app: FastAPI):
     await _seed_pricing()
     raw_enabled = os.environ.get("STORE_RAW_PROMPTS", "").lower() in {"1", "true", "yes", "on"}
     _log_feature_state(features.refresh())
+    async with AsyncSessionLocal() as session:
+        await jev_scorer.recover_after_restart(session)
     await _startup_purge()
     loop_task = asyncio.create_task(retention.retention_loop(AsyncSessionLocal, DB_PATH))
     log.info("Token Inspector ready: db=%s raw_prompts=%s", DB_PATH, raw_enabled)

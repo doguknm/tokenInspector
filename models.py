@@ -290,6 +290,7 @@ _BASE_PRICING = [
     ("gemini/gemini-2.5-flash-lite", 0.10, 0.40),
     ("gemini/gemini-2.0-flash", 0.10, 0.40),
     ("gemini/gemini-2.0-flash-lite", 0.075, 0.30),
+    ("typesafe-ai/jev", 0.042, 0.0),
 ]
 
 SEED_PRICING = [

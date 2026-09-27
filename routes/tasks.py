@@ -12,13 +12,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 import database
 import features
+import jev_scorer
 import retention
 from auth import require_sensitive_auth
 from database import get_session
@@ -253,6 +255,159 @@ async def list_tasks(
         "page": page,
         "page_size": page_size,
         "projects": projects,
+    }
+
+
+class EvaluateIn(BaseModel):
+    task_refs: list[str] = Field(min_length=1, max_length=100)
+
+
+async def _skip_reason(session: AsyncSession, ref: str, now: str) -> Optional[str]:
+    if not _TASK_REF_RE.fullmatch(ref):
+        return "not_found"
+    row = (await session.execute(text("SELECT * FROM tasks WHERE id = :id"), {"id": ref})).mappings().first()
+    if row is None:
+        return "not_found"
+    if row["project_name"] == jev_scorer.EVALUATOR_PROJECT:
+        return "evaluator_task"
+    state = prompt_state(dict(row), now)
+    if state != "retained":
+        return {"none": "no_prompt", "expired": "prompt_expired", "purged": "prompt_purged"}[state]
+    done = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM task_evaluations WHERE task_ref = :t AND evaluator = 'jev' AND status = 'ok' "
+                "AND rubric_version = :r AND input_hash = :h"
+            ),
+            {"t": ref, "r": RUBRIC_VERSION, "h": jev_scorer.input_hash(row["prompt_text"])},
+        )
+    ).first()
+    return "already_scored" if done else None
+
+
+@router.post("/evaluate", dependencies=[Depends(require_sensitive_auth)])
+async def evaluate(
+    body: EvaluateIn,
+    response: Response,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    state = features.current()
+    refs = list(dict.fromkeys(body.task_refs))
+    if not state.jev_enabled:
+        response.status_code = 200
+        return {
+            "run_id": None, "enabled": False, "queued": 0,
+            "skipped": [{"task_ref": r, "reason": "jev_disabled"} for r in refs], "retry_not_before": None,
+        }
+    now_dt = jev_scorer.now()  # same clock as the worker's cooldown checks
+    now = _fmt(now_dt)
+    skipped, queued = [], []
+    for ref in refs:
+        reason = await _skip_reason(session, ref, now)
+        if reason:
+            skipped.append({"task_ref": ref, "reason": reason})
+        else:
+            queued.append(ref)
+    blocked = jev_scorer.blocked_until(await jev_scorer.cooldowns(session), now_dt, state.budget.max_retry_wait_s)
+    if blocked is not None or not queued:
+        response.status_code = 200
+        return {
+            "run_id": None, "enabled": True, "queued": 0, "skipped": skipped,
+            "retry_not_before": _fmt(blocked) if blocked else None,
+        }
+    run_id = str(uuid.uuid4())
+    try:
+        await session.execute(
+            text(
+                "INSERT INTO evaluator_runs (id, evaluator, status, requested_count, queued_count, queued_at) "
+                "VALUES (:id, 'jev', 'queued', :req, :q, :at)"
+            ),
+            {"id": run_id, "req": len(refs), "q": len(queued), "at": now},
+        )
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="evaluation_in_progress")
+    background_tasks.add_task(jev_scorer.run_evaluation, run_id, queued)
+    response.status_code = 202
+    return {"run_id": run_id, "enabled": True, "queued": len(queued), "skipped": skipped, "retry_not_before": None}
+
+
+async def _run_summary(session: AsyncSession, run_id: str) -> Optional[dict]:
+    run = (
+        await session.execute(text("SELECT * FROM evaluator_runs WHERE id = :id"), {"id": run_id})
+    ).mappings().first()
+    if run is None:
+        return None
+    counts = dict(
+        (
+            await session.execute(
+                text("SELECT status, COUNT(*) FROM task_evaluations WHERE run_id = :id GROUP BY status"),
+                {"id": run_id},
+            )
+        ).all()
+    )
+    return {
+        "run_id": run["id"], "status": run["status"], "requested_count": run["requested_count"],
+        "queued_count": run["queued_count"],
+        "attempted": sum(v for k, v in counts.items() if k != "skipped"),
+        **{k: int(counts.get(k, 0)) for k in ("ok", "error", "rate_limited", "deferred", "skipped")},
+        "stop_reason": run["stop_reason"], "retry_not_before": run["retry_not_before"],
+        "queued_at": run["queued_at"], "started_at": run["started_at"], "finished_at": run["finished_at"],
+    }
+
+
+@router.get("/evaluator-runs/{run_id}")
+async def evaluator_run(run_id: str, session: AsyncSession = Depends(get_session)):
+    summary = await _run_summary(session, run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    return summary
+
+
+@router.get("/evaluator-status")
+async def evaluator_status(session: AsyncSession = Depends(get_session)):
+    state = features.current()
+    budget = state.budget or features.Budget(0.0, 0.0, 0, 0.0)
+    totals = await jev_scorer.spend(session, jev_scorer.now())
+    current = (
+        await session.execute(
+            text("SELECT id FROM evaluator_runs WHERE status IN ('queued', 'running') ORDER BY queued_at DESC LIMIT 1")
+        )
+    ).first()
+    last = (
+        await session.execute(
+            text(
+                "SELECT id FROM evaluator_runs WHERE status NOT IN ('queued', 'running') "
+                "ORDER BY finished_at DESC, queued_at DESC LIMIT 1"
+            )
+        )
+    ).first()
+    current_summary = await _run_summary(session, current[0]) if current else None
+    last_summary = await _run_summary(session, last[0]) if last else None
+    cool = await jev_scorer.cooldowns(session)
+    return {
+        "enabled": state.jev_enabled,
+        "disabled_reason": state.jev_disabled_reason,
+        "credentials_present": state.credentials_present,
+        "running": current is not None,
+        "current_run": None if not current_summary else {
+            k: current_summary[k] for k in ("run_id", "status", "queued_count", "attempted")
+        },
+        "last_run": None if not last_summary else {
+            k: last_summary[k] for k in ("run_id", "status", "stop_reason", "retry_not_before", "finished_at")
+        },
+        "spent_today_usd": totals["day_usd"],
+        "spent_month_usd": totals["month_usd"],
+        "calls_today": totals["calls_day"],
+        "budget_day_usd": budget.day_usd,
+        "budget_month_usd": budget.month_usd,
+        "max_calls_per_day": budget.max_calls_per_day,
+        "last_error_type": last_summary["stop_reason"] if last_summary else None,
+        "provider_cooldowns": [
+            {"provider": p, "not_before": jev_scorer._fmt(nb)} for p, nb in sorted(cool.items())
+        ],
     }
 
 
