@@ -21,6 +21,7 @@ class TokenEvent(SQLModel, table=True):
             unique=True,
             sqlite_where=text("client_event_id IS NOT NULL"),
         ),
+        Index("ix_token_events_project_session_turn", "project_name", "session_id", "turn_id"),
     )
     model_config = ConfigDict(protected_namespaces=())
 
@@ -81,6 +82,169 @@ class TokenEvent(SQLModel, table=True):
     prompt_length: Optional[int] = None
     prompt_text: Optional[str] = None
     complexity: Optional[int] = None
+    complexity_method: Optional[str] = Field(default=None, max_length=32)
+
+    request_system_chars: Optional[int] = None
+    request_history_chars: Optional[int] = None
+    request_tool_output_chars: Optional[int] = None
+    request_file_content_chars: Optional[int] = None
+    request_file_ref_count: Optional[int] = None
+    request_tool_names_json: Optional[str] = None
+
+
+class Task(SQLModel, table=True):
+    """One Hermes turn: one user prompt -> final response (D0 decision, status.md Drift Log)."""
+
+    __tablename__ = "tasks"
+    __table_args__ = (
+        Index("ux_tasks_project_session_turn", "project_name", "session_id", "turn_id", unique=True),
+        Index("ix_tasks_session", "session_id", "first_seen_at"),
+        Index("ix_tasks_parent", "parent_task_ref"),
+        Index("ix_tasks_last_seen", "last_seen_at", "id"),
+        Index(
+            "ix_tasks_prompt_expires",
+            "prompt_expires_at",
+            sqlite_where=text("prompt_text IS NOT NULL"),
+        ),
+    )
+
+    id: str = Field(primary_key=True)  # task_ref
+    project_name: str
+    session_id: str
+    turn_id: str
+    source_task_id: Optional[str] = None
+    parent_task_ref: Optional[str] = None
+    root_task_ref: Optional[str] = None
+    hierarchy_status: str = Field(default="unknown", sa_column_kwargs={"server_default": "unknown"})
+    source: str = Field(default="ingest", sa_column_kwargs={"server_default": "ingest"})
+    first_seen_at: str
+    last_seen_at: str
+    completion: Optional[str] = None
+    completed_at: Optional[str] = None
+    start_complexity: Optional[int] = None
+    start_complexity_method: Optional[str] = None
+    start_complexity_event_at: Optional[str] = None
+    start_complexity_event_id: Optional[str] = None
+    prompt_text: Optional[str] = None
+    prompt_hash: Optional[str] = None
+    prompt_length: Optional[int] = None
+    prompt_truncated: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    prompt_redaction_version: Optional[str] = None
+    prompt_captured_at: Optional[str] = None
+    prompt_expires_at: Optional[str] = None
+    prompt_purged_at: Optional[str] = None
+    created_at: str = Field(default_factory=_now)
+    updated_at: str = Field(default_factory=_now)
+
+
+class EvaluatorRun(SQLModel, table=True):
+    __tablename__ = "evaluator_runs"
+    __table_args__ = (
+        Index(
+            "ux_evaluator_runs_active",
+            "evaluator",
+            unique=True,
+            sqlite_where=text("status IN ('queued','running')"),
+        ),
+    )
+
+    id: str = Field(primary_key=True)
+    evaluator: str
+    status: str
+    requested_count: int
+    queued_count: int
+    stop_reason: Optional[str] = None
+    retry_not_before: Optional[str] = None
+    queued_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
+class TaskEvaluation(SQLModel, table=True):
+    __tablename__ = "task_evaluations"
+    __table_args__ = (
+        Index("ix_task_evaluations_task", "task_ref"),
+        Index("ix_task_evaluations_eval_time", "evaluator", "evaluated_at"),
+        Index(
+            "ux_task_evaluations_jev_ok",
+            "task_ref",
+            "rubric_version",
+            "input_hash",
+            unique=True,
+            sqlite_where=text("evaluator = 'jev' AND status = 'ok'"),
+        ),
+        Index(
+            "ux_task_evaluations_human",
+            "task_ref",
+            "rubric_version",
+            "labeler",
+            unique=True,
+            sqlite_where=text("evaluator = 'human'"),
+        ),
+    )
+
+    id: str = Field(primary_key=True)
+    task_ref: str = Field(foreign_key="tasks.id")
+    run_id: Optional[str] = Field(default=None, foreign_key="evaluator_runs.id")
+    evaluator: str
+    rubric_version: str
+    status: str
+    label: Optional[int] = None
+    labeler: Optional[str] = None
+    note: Optional[str] = None
+    raw_score: Optional[float] = None
+    confidence: Optional[float] = None
+    probabilities_json: Optional[str] = None
+    legend_json: Optional[str] = None
+    model: Optional[str] = None
+    provider_used: Optional[str] = None
+    input_hash: Optional[str] = None
+    input_tokens: Optional[int] = None
+    cost_usd: Optional[float] = None
+    http_attempts: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
+    latency_ms: Optional[int] = None
+    error_type: Optional[str] = None
+    evaluated_at: str
+
+
+class EvaluatorAttempt(SQLModel, table=True):
+    __tablename__ = "evaluator_attempts"
+    __table_args__ = (
+        Index("ix_evaluator_attempts_started", "started_at"),
+        Index("ix_evaluator_attempts_run", "run_id"),
+    )
+
+    id: str = Field(primary_key=True)
+    run_id: str = Field(foreign_key="evaluator_runs.id")
+    task_ref: str = Field(foreign_key="tasks.id")
+    provider: str
+    status: str
+    reserved_tokens: int
+    reserved_cost_usd: float
+    actual_input_tokens: Optional[int] = None
+    actual_cost_usd: Optional[float] = None
+    http_status: Optional[int] = None
+    error_type: Optional[str] = None
+    retry_after_s: Optional[float] = None
+    started_at: str
+    completed_at: Optional[str] = None
+
+
+class ProviderCooldown(SQLModel, table=True):
+    __tablename__ = "provider_cooldowns"
+
+    provider: str = Field(primary_key=True)
+    not_before: str
+    reason: str
+    updated_at: str
+
+
+class RetentionState(SQLModel, table=True):
+    __tablename__ = "retention_state"
+
+    key: str = Field(primary_key=True)
+    value: Optional[str] = None
+    updated_at: str
 
 
 class PricingRule(SQLModel, table=True):

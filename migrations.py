@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import shutil
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -9,8 +9,42 @@ from typing import Awaitable, Callable
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-LATEST_SCHEMA_VERSION = 9
+import task_store
+
+LATEST_SCHEMA_VERSION = 10
 Migration = Callable[[AsyncConnection], Awaitable[None]]
+
+
+def _read_only(path: Path) -> sqlite3.Connection:
+    return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+
+
+def _count_and_version(conn: sqlite3.Connection) -> tuple[int | None, int]:
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    count = conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0] if "token_events" in tables else None
+    version = 0
+    if "schema_migrations" in tables:
+        version = int(conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()[0] or 0)
+    return count, version
+
+
+def verify_backup(source: Path, target: Path, current: int) -> None:
+    """Fail closed unless the backup is intact and matches the source (runs before any mutation)."""
+    with closing(_read_only(source)) as src:
+        source_count, _ = _count_and_version(src)
+    with closing(_read_only(target)) as bak:
+        integrity = bak.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise RuntimeError(f"pre-migration backup verification failed: integrity_check={integrity!r}")
+        backup_count, backup_version = _count_and_version(bak)
+    if backup_count != source_count:
+        raise RuntimeError(
+            f"pre-migration backup verification failed: token_events {backup_count} != {source_count}"
+        )
+    if backup_version != current:
+        raise RuntimeError(
+            f"pre-migration backup verification failed: schema version {backup_version} != {current}"
+        )
 
 
 def backup_database_if_needed(db_path: str) -> Path | None:
@@ -32,7 +66,10 @@ def backup_database_if_needed(db_path: str) -> Path | None:
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     target = path.with_name(f"{path.name}.bak-v{current}-{stamp}")
-    shutil.copy2(path, target)
+    # The online-backup API includes pages still in the WAL file; a file copy would miss them.
+    with closing(sqlite3.connect(path)) as src, closing(sqlite3.connect(target)) as dst:
+        src.backup(dst)
+    verify_backup(path, target, current)
     return target
 
 
@@ -209,6 +246,47 @@ async def _m9(conn: AsyncConnection) -> None:
     await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_model_aliases_model ON model_aliases(model)"))
 
 
+# Column definitions match what SQLModel.create_all emits for TokenEvent, in declaration order,
+# so fresh and migrated schemas agree.
+_M10_TOKEN_EVENT_COLUMNS = {
+    "complexity_method": "VARCHAR(32)",
+    "request_system_chars": "INTEGER",
+    "request_history_chars": "INTEGER",
+    "request_tool_output_chars": "INTEGER",
+    "request_file_content_chars": "INTEGER",
+    "request_file_ref_count": "INTEGER",
+    "request_tool_names_json": "VARCHAR",
+}
+
+
+async def _m10(conn: AsyncConnection) -> None:
+    import models
+
+    def _create_tables(sync_conn) -> None:
+        # The model classes define the DDL; create_all normally created these already.
+        for model in (
+            models.Task,
+            models.EvaluatorRun,
+            models.TaskEvaluation,
+            models.EvaluatorAttempt,
+            models.ProviderCooldown,
+            models.RetentionState,
+        ):
+            model.__table__.create(sync_conn, checkfirst=True)
+            for index in model.__table__.indexes:
+                index.create(sync_conn, checkfirst=True)
+
+    await conn.run_sync(_create_tables)
+    await _add_columns(conn, "token_events", _M10_TOKEN_EVENT_COLUMNS)
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_token_events_project_session_turn "
+            "ON token_events (project_name, session_id, turn_id)"
+        )
+    )
+    await task_store.backfill_tasks(conn, models._now())
+
+
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _m1),
     (2, _m2),
@@ -219,6 +297,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (7, _m7),
     (8, _m8),
     (9, _m9),
+    (10, _m10),
 ]
 
 
