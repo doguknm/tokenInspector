@@ -20,7 +20,7 @@ _Chosen by the user on 2026-09-27 (new-plan Step 3c). Every step is executed by 
 |---|---|---|---|
 | d0-discovery | Claude Code (read-only on hermes) | done 2026-09-27 — user acknowledged; decisions in Drift Log | **Blocking.** Produces `discovery-evidence.md` (see Open Items). The user acknowledges it before `_m10` backfill semantics and plugin 0a-role/0c are implemented |
 | database | Claude Code (Opus 5.5, direct) | done 2026-09-27 (`42d447a`) | After D0. Integrity-verified online backup before migrating. Deploy plugin 0b (spool) before migration v10 |
-| backend | Claude Code (Opus 5.5, direct) | in progress — Part B 0a/0b done (plugin `969401b`, `1fb00b3`), not deployed; Part A next | Part A = this repo. Part B = Hermes plugin, implemented and tested on hermes only. Order: 0a/0b → migration → Part A → 0c |
+| backend | Claude Code (Opus 5.5, direct) | in progress — Part B 0a/0b done (plugin `969401b`, `1fb00b3`) and **deployed 2026-09-27** (user approval; gateway restarted); Part A next | Part A = this repo. Part B = Hermes plugin, implemented and tested on hermes only. Order: 0a/0b → migration → Part A → 0c |
 | frontend | Claude Code (Opus 5.5, direct, `frontend-design` skill) | not started | Tasks view in `static/` (vanilla JS + Chart.js, no build step) |
 | tests-other | Claude Code (Opus 5.5, direct) | not started | Can run in parallel with frontend once database/backend lanes are complete. Plugin tests run on hermes. Includes the Playwright stub suite (`tests/browser/`) |
 | tests-e2e | Claude Code (Opus 5.5, direct, browser tools) | not started | Run after frontend lane is complete. The dev server runs against the demo DBs from `scripts/seed_tasks_demo.py` (`standard`, `many-scored`). Playwright suites stay in tests-other |
@@ -140,3 +140,4 @@ Carried out of scope from the brief: Faz 1, Faz 4, traceparent remapping, cross-
 | 2026-09-27 | Plugin 0a/0b tests (local) | 73 passed, 1 skipped (POSIX permissions) |
 | 2026-09-27 | Plugin 0a/0b tests (hermes, temp clone of the branch, Python 3.13 venv) | 74 passed (permissions test included); hermes plugin working copy untouched (`main`, clean) |
 | 2026-09-27 | Mutation checks on spool controls | 4/4 caught: no scrub before queue (1 fail), rejected replay stops the queue (1), no prompt expiry (3), auth treated as reject (2) |
+| 2026-09-27 | Faz 0 deploy on hermes (user-approved) | source repo `main` and installed copy fast-forwarded to `1fb00b3`; `hermes gateway restart` OK (new PID); spool dir created `0700`. **Pending:** read-only AC1 check on prod rows written after the restart (needs real Hermes traffic) |
