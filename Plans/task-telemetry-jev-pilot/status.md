@@ -19,7 +19,7 @@ _Chosen by the user on 2026-09-27 (new-plan Step 3c). Every step is executed by 
 | Lane | Tool | Status | Notes |
 |---|---|---|---|
 | d0-discovery | Claude Code (read-only on hermes) | done 2026-09-27 — user acknowledged; decisions in Drift Log | **Blocking.** Produces `discovery-evidence.md` (see Open Items). The user acknowledges it before `_m10` backfill semantics and plugin 0a-role/0c are implemented |
-| database | Claude Code (Opus 5.5, direct) | not started | After D0. Integrity-verified online backup before migrating. Deploy plugin 0b (spool) before migration v10 |
+| database | Claude Code (Opus 5.5, direct) | done 2026-09-27 (`42d447a`) | After D0. Integrity-verified online backup before migrating. Deploy plugin 0b (spool) before migration v10 |
 | backend | Claude Code (Opus 5.5, direct) | not started | Part A = this repo. Part B = Hermes plugin, implemented and tested on hermes only. Order: 0a/0b → migration → Part A → 0c |
 | frontend | Claude Code (Opus 5.5, direct, `frontend-design` skill) | not started | Tasks view in `static/` (vanilla JS + Chart.js, no build step) |
 | tests-other | Claude Code (Opus 5.5, direct) | not started | Can run in parallel with frontend once database/backend lanes are complete. Plugin tests run on hermes. Includes the Playwright stub suite (`tests/browser/`) |
@@ -83,6 +83,7 @@ _Append here when any lane discovers the spec is wrong. Do not edit lane files m
 - 2026-09-27 (D0): Request composition is captured at `pre_api_request` (kwargs `request_messages`, `conversation_history`, `message_count`, `approx_input_tokens`, `request_char_count`), not `pre_llm_call`. File-reading tools: `read_file`, `search_files`, `read_terminal`. Plugin in-memory queue bound: 2,048 events.
 - 2026-09-27 (database lane, follows the task-unit decision): `tasks` columns become `session_id TEXT NOT NULL` (`''` when absent), `turn_id TEXT NOT NULL`, `source_task_id TEXT` (Hermes task_id), `parent_task_ref`/`root_task_ref` (task refs, no FK) instead of `task_id`/`parent_task_id`/`root_task_id`; unique key `ux_tasks_project_session_turn(project_name, session_id, turn_id)`; `ix_tasks_project_parent` → `ix_tasks_parent(parent_task_ref)`. The `token_events` lookup index is `ix_token_events_project_session_turn(project_name, session_id, turn_id)` instead of `(project_name, task_id)`. A valid turn is a non-empty `turn_id` not in (`unknown`, `session`) on a non-`session` event.
 - 2026-09-27 (database lane): session-end markers = `event_type='session' AND finish_reason IN ('end','shutdown','session_boundary','new_session')` (plugin phases for `on_session_end`, `on_session_finalize` and `on_session_reset`); `start` is not a marker.
+- 2026-09-27 (database lane): the verified backup opens the `.bak-v*` file in WAL mode, so `-wal`/`-shm` siblings can appear next to it. Backend §5 backup re-purge must glob `<DB_PATH>.bak-v*` **excluding** `-wal`/`-shm`/`-journal` files (they are not databases) and checkpoint each backup before VACUUM. AC3c compares `sqlite_master.sql` for the six new tables; for `token_events` it compares `table_info` + `index_list`, because SQLite appends ALTER-added columns to the stored CREATE text differently from `create_all`.
 
 ## Hermes Reviews
 _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/task-telemetry-jev-pilot/hermes/._
@@ -126,3 +127,12 @@ Resolved in r1 (for reference):
 - pilot thresholds with the minimum of 40 pairs and the `INCONCLUSIVE` outcome.
 
 Carried out of scope from the brief: Faz 1, Faz 4, traceparent remapping, cross-source dedup, automated JEV at scale, provider-side erasure, backups outside the DB directory.
+
+## Verification Log
+| Date | Check | Result |
+|---|---|---|
+| 2026-09-27 | Baseline before implementation | backend 16 passed (local), plugin 25 passed (local) |
+| 2026-09-27 | Database lane tests (`tests/test_migration_v10.py`) | 19 passed; full suite 35 passed |
+| 2026-09-27 | Mutation checks on database controls | 5/5 caught: no `BEGIN IMMEDIATE` (2 fail), file copy instead of online backup (1), no backup verification (1), any complexity method accepted (4), reversed id tie-break (1) |
+| 2026-09-27 | AC3b on hermes — online-backup clone of prod, `init_db()` on the clone | clone integrity ok; 9,289 rows before/after, same ids, **0 changed rows**, 0 non-null new columns; version 10; integrity ok; 299 tasks, 0 prompt text. Clone and its backups deleted; prod file only read |
+| 2026-09-27 | AC3e — v9 app (`0aab993` worktree) on a migrated v10 DB (`scripts/check_v9_app_on_v10.py`) | POST 201, summary 200 |
