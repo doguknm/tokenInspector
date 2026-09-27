@@ -11,6 +11,11 @@
   --green: #22c55e;
   --red: #ef4444;
   --yellow: #f59e0b;
+  /* Token types: same hex values as TOKEN_TYPES in app.js */
+  --tok-input: #6366f1;
+  --tok-cache-read: #06b6d4;
+  --tok-cache-write: #a855f7;
+  --tok-output: #f59e0b;
 }
 
 body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 14px; }
@@ -53,6 +58,13 @@ h3 { font-size: 15px; font-weight: 600; margin: 20px 0 12px; color: var(--muted)
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; }
 .card-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
 .card-value { font-size: 26px; font-weight: 700; color: var(--text); }
+.stat-cards.tight { margin-bottom: 12px; }
+.card-sub { color: var(--muted); font-size: 12px; margin-top: 4px; min-height: 15px; }
+.swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 1px; }
+.tok-input { background: var(--tok-input); }
+.tok-cache-read { background: var(--tok-cache-read); }
+.tok-cache-write { background: var(--tok-cache-write); }
+.tok-output { background: var(--tok-output); }
 
 /* CHARTS */
 .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }

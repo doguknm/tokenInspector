@@ -32,11 +32,17 @@
           <button class="day-btn" data-days="90">90d</button>
         </div>
       </div>
-      <div class="stat-cards" id="overview-cards">
+      <div class="stat-cards tight" id="overview-cards">
         <div class="card"><div class="card-label">Total Events</div><div class="card-value" id="stat-events">—</div></div>
-        <div class="card"><div class="card-label">Total Tokens</div><div class="card-value" id="stat-tokens">—</div></div>
+        <div class="card"><div class="card-label">Total Tokens (sum)</div><div class="card-value" id="stat-tokens">—</div></div>
         <div class="card"><div class="card-label">Total Cost (USD)</div><div class="card-value" id="stat-cost">—</div></div>
         <div class="card"><div class="card-label">Observed Projects</div><div class="card-value" id="stat-projects">—</div></div>
+      </div>
+      <div class="stat-cards" id="token-cards" aria-label="Tokens by type">
+        <div class="card"><div class="card-label"><span class="swatch tok-input"></span>Input</div><div class="card-value" id="stat-input">—</div><div class="card-sub" id="stat-input-share"></div></div>
+        <div class="card"><div class="card-label"><span class="swatch tok-cache-read"></span>Cache read</div><div class="card-value" id="stat-cache-read">—</div><div class="card-sub" id="stat-cache-read-share"></div></div>
+        <div class="card"><div class="card-label"><span class="swatch tok-cache-write"></span>Cache write</div><div class="card-value" id="stat-cache-write">—</div><div class="card-sub" id="stat-cache-write-share"></div></div>
+        <div class="card"><div class="card-label"><span class="swatch tok-output"></span>Output</div><div class="card-value" id="stat-output">—</div><div class="card-sub" id="stat-output-share"></div></div>
       </div>
       <div class="charts-row">
         <div class="chart-box wide"><canvas id="chart-timeseries"></canvas></div>
@@ -45,7 +51,7 @@
       <h3>Observed Activity Breakdown</h3>
       <div class="table-wrap">
         <table id="table-projects">
-          <thead><tr><th>Project</th><th>Events</th><th>Tokens</th><th>Cost (USD)</th><th>Avg Latency (ms)</th></tr></thead>
+          <thead><tr><th>Project</th><th>Events</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total (sum)</th><th>Cost (USD)</th><th>Avg Latency (ms)</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -63,14 +69,14 @@
       <h3>Known Repositories — Filesystem Inventory</h3>
       <div class="table-wrap">
         <table id="table-project-inventory">
-          <thead><tr><th>Repository</th><th>Local Directory</th><th>Identity Source</th><th>Telemetry</th><th>Events</th><th>Tokens</th><th>Last Activity</th></tr></thead>
+          <thead><tr><th>Repository</th><th>Local Directory</th><th>Identity Source</th><th>Telemetry</th><th>Events</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total (sum)</th><th>Last Activity</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
       <h3>Observed Activity — Event-backed Telemetry</h3>
       <div class="table-wrap">
         <table id="table-observed-projects">
-          <thead><tr><th>Attribution</th><th>Events</th><th>Tokens</th><th>Cost (USD)</th><th>Avg Latency</th></tr></thead>
+          <thead><tr><th>Attribution</th><th>Events</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total (sum)</th><th>Cost (USD)</th><th>Avg Latency</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -96,7 +102,7 @@
       </div>
       <div class="table-wrap">
         <table id="table-proj-events">
-          <thead><tr><th>Time</th><th>Model</th><th>Role</th><th>Prompt</th><th>Completion</th><th>Cost</th><th>Latency</th><th>Status</th></tr></thead>
+          <thead><tr><th>Time</th><th>Model</th><th>Role</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Cost</th><th>Latency</th><th>Status</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -108,7 +114,7 @@
       <div class="chart-box" style="max-width:700px; margin-bottom:24px;"><canvas id="chart-model-latency"></canvas></div>
       <div class="table-wrap">
         <table id="table-models">
-          <thead><tr><th>Model</th><th>Events</th><th>Avg Prompt</th><th>Avg Completion</th><th>Avg Latency (ms)</th><th>Total Cost</th><th>Cost/1K tokens</th></tr></thead>
+          <thead><tr><th>Model</th><th>Events</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total (sum)</th><th>Avg Latency (ms)</th><th>Total Cost</th><th title="Cost divided by input + output tokens (cache excluded)">Cost/1K input+output</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -119,7 +125,7 @@
       <div class="toolbar">
         <h2>Complexity Analytics</h2>
       </div>
-      <h3>Avg Tokens by Deterministic Complexity</h3>
+      <h3>Avg Input + Output Tokens by Deterministic Complexity</h3>
       <div class="chart-box" style="max-width:600px; margin-bottom:24px;">
         <canvas id="chart-complexity"></canvas>
       </div>
@@ -165,7 +171,7 @@
       <p id="tasks-empty" class="muted hidden">No tasks in this window.</p>
       <div class="table-wrap">
         <table id="table-tasks">
-          <thead><tr><th>Last seen</th><th>Project</th><th>Task</th><th>RS-v1</th><th>JEV</th><th>Conf.</th><th>Tokens</th><th>Cost</th><th>Tools</th><th>Wall time</th><th>Completion</th><th>Prompt</th></tr></thead>
+          <thead><tr><th>Last seen</th><th>Project</th><th>Task</th><th>RS-v1</th><th>JEV</th><th>Conf.</th><th>Input</th><th>Cache read / write</th><th>Output</th><th>Cost</th><th>Tools</th><th>Wall time</th><th>Completion</th><th>Prompt</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>

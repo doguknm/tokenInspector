@@ -76,6 +76,29 @@ async def test_analytics_are_sql_aggregated_and_cost_status_separated(client):
     assert len(timeseries) == 1
 
 
+async def test_analytics_return_token_categories_separately(client):
+    events = [
+        {"model": "m1", "client_event_id": "t1", "prompt_tokens": 10, "completion_tokens": 5,
+         "cache_read_tokens": 100, "cache_creation_tokens": 20},
+        {"model": "m1", "client_event_id": "t2", "prompt_tokens": 1, "completion_tokens": 2,
+         "cache_read_tokens": 3, "cache_creation_tokens": 4},
+        {"model": "m1", "client_event_id": "t3", "prompt_tokens": 150, "completion_tokens": 1,
+         "cache_read_tokens": 100, "cache_creation_tokens": 20, "input_tokens_include_cache": True},
+    ]
+    response = await client.post("/api/events/batch", headers={"X-Project-Name": "split"}, json={"events": events})
+    assert response.status_code == 200
+    expected = {"prompt_tokens": 41, "completion_tokens": 8, "cache_read_tokens": 203, "cache_creation_tokens": 44}
+
+    for path in ("by-model", "by-project", "by-role"):
+        row = (await client.get(f"/api/analytics/{path}?days=30")).json()[0]
+        assert {key: row[key] for key in expected} == expected, path
+        assert row["total_tokens"] == 49  # existing key keeps its input + output meaning
+    series = (await client.get("/api/analytics/timeseries?days=30")).json()
+    assert len(series) == 1
+    assert {key: series[0][key] for key in expected} == expected
+    assert series[0]["total_tokens"] == 49
+
+
 async def test_complexity_analytics_include_unpriced_events(client):
     response = await client.post(
         "/api/events/batch",
@@ -147,6 +170,10 @@ async def test_project_inventory_includes_repositories_without_events(client, mo
             "event_count": 1,
             "total_tokens": 10,
             "last_activity_at": rows[0]["last_activity_at"],
+            "prompt_tokens": 10,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
         },
         {
             "project_name": "inactive-folder",
@@ -157,6 +184,10 @@ async def test_project_inventory_includes_repositories_without_events(client, mo
             "event_count": 0,
             "total_tokens": 0,
             "last_activity_at": None,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
         },
     ]
     assert all("/" not in row["workspace_id"] for row in rows)

@@ -27,6 +27,7 @@ All notable user-visible and operational changes are documented here.
 
 ### Changed
 
+- Dashboard shows input, cache read, cache write and output tokens separately (Overview, Projects, Models, Tasks); analytics `by-*`, `timeseries` and `project-inventory` rows gain `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens` sums (additive; `total_tokens` keeps its input + output meaning).
 - Production SQLite storage moved outside the repository and runs with additive migrations, backups, WAL, and busy timeout.
 - Project identity now prefers canonical sanitized Git remote repository names over local directory names.
 - Prompt marker attribution is disabled by default in the Hermes plugin.

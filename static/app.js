@@ -8,6 +8,21 @@ let currentProject = '';
 let projStatus = '';
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+// Token types, shown separately everywhere. prompt_tokens excludes cache (ingest normalizes it).
+const TOKEN_TYPES = [
+  { key: 'prompt_tokens', label: 'Input', color: '#6366f1', stat: 'input' },
+  { key: 'cache_read_tokens', label: 'Cache read', color: '#06b6d4', stat: 'cache-read' },
+  { key: 'cache_creation_tokens', label: 'Cache write', color: '#a855f7', stat: 'cache-write' },
+  { key: 'completion_tokens', label: 'Output', color: '#f59e0b', stat: 'output' },
+];
+const tokenSum = r => TOKEN_TYPES.reduce((sum, t) => sum + (Number(r[t.key]) || 0), 0);
+// Input, cache read, cache write, output, then the labelled sum.
+const tokenCells = r => TOKEN_TYPES.map(t => `<td>${fmt.num(r[t.key])}</td>`).join('') + `<td>${fmt.num(tokenSum(r))}</td>`;
+const tokenBars = rows => TOKEN_TYPES.map(t => ({
+  type: 'bar', label: t.label, data: rows.map(r => r[t.key]), backgroundColor: t.color, stack: 'tokens', yAxisID: 'yTokens', order: 1,
+}));
+const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+
 const fmt = {
   num: n => n == null ? '—' : Number(n).toLocaleString(),
   cost: n => n == null ? '—' : '$' + Number(n).toFixed(4),
@@ -67,27 +82,37 @@ async function loadOverview() {
   ]);
 
   document.getElementById('stat-events').textContent = fmt.num(summary.total_events);
-  document.getElementById('stat-tokens').textContent = fmt.num(summary.total_prompt_tokens + summary.total_completion_tokens);
+  const totals = {
+    prompt_tokens: summary.total_prompt_tokens, completion_tokens: summary.total_completion_tokens,
+    cache_read_tokens: summary.total_cache_read_tokens, cache_creation_tokens: summary.total_cache_creation_tokens,
+  };
+  const allTokens = tokenSum(totals);
+  document.getElementById('stat-tokens').textContent = fmt.num(allTokens);
+  TOKEN_TYPES.forEach(t => {
+    document.getElementById('stat-' + t.stat).textContent = fmt.num(totals[t.key]);
+    document.getElementById('stat-' + t.stat + '-share').textContent =
+      allTokens ? (totals[t.key] / allTokens * 100).toFixed(1) + '% of total' : '';
+  });
   document.getElementById('stat-cost').textContent = fmt.cost(summary.total_cost_usd);
   document.getElementById('stat-projects').textContent = fmt.num(summary.unique_projects);
 
-  // timeseries line chart
+  // timeseries: stacked token types + cost line
   destroyChart('timeseries');
   const tsCtx = document.getElementById('chart-timeseries').getContext('2d');
   charts['timeseries'] = new Chart(tsCtx, {
     data: {
       labels: timeseries.map(r => r.date),
       datasets: [
-        { type: 'line', label: 'Tokens', data: timeseries.map(r => r.total_tokens), borderColor: CHART_COLORS[0], backgroundColor: CHART_COLORS[0] + '22', yAxisID: 'yTokens', tension: .3, fill: true },
-        { type: 'line', label: 'Cost ($)', data: timeseries.map(r => r.total_cost_usd), borderColor: CHART_COLORS[1], backgroundColor: CHART_COLORS[1] + '22', yAxisID: 'yCost', tension: .3, fill: true },
+        ...tokenBars(timeseries),
+        { type: 'line', label: 'Cost ($)', data: timeseries.map(r => r.total_cost_usd), borderColor: CHART_COLORS[1], backgroundColor: CHART_COLORS[1], yAxisID: 'yCost', tension: .3, order: 0 },
       ],
     },
     options: {
       responsive: true, interaction: { mode: 'index' },
-      plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: 'Daily Tokens & Cost', color: '#e2e8f0' } },
+      plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: 'Daily Tokens by Type & Cost', color: '#e2e8f0' } },
       scales: {
-        x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
-        yTokens: { position: 'left', ticks: { color: '#6366f1' }, grid: { color: '#2a2d3a' } },
+        x: { stacked: true, ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
+        yTokens: { position: 'left', stacked: true, ticks: { color: '#8892a4', callback: v => compact.format(v) }, grid: { color: '#2a2d3a' } },
         yCost: { position: 'right', ticks: { color: '#22c55e', callback: v => '$' + v.toFixed(3) }, grid: { drawOnChartArea: false } },
       },
     },
@@ -119,7 +144,7 @@ async function loadOverview() {
     <tr>
       <td>${r.project_name}</td>
       <td>${fmt.num(r.event_count)}</td>
-      <td>${fmt.num(r.total_tokens)}</td>
+      ${tokenCells(r)}
       <td>${fmt.cost(r.total_cost_usd)}</td>
       <td>${fmt.ms(r.avg_process_time_ms)}</td>
     </tr>`).join('');
@@ -140,7 +165,7 @@ async function loadProjectsView() {
       <td>${r.discovery_source}</td>
       <td><span class="badge ${r.has_telemetry ? 'badge-success' : ''}">${r.has_telemetry ? 'observed' : 'inventory only'}</span></td>
       <td>${fmt.num(r.event_count)}</td>
-      <td>${fmt.num(r.total_tokens)}</td>
+      ${tokenCells(r)}
       <td>${fmt.date(r.last_activity_at)}</td>
     </tr>`).join('');
 
@@ -149,7 +174,7 @@ async function loadProjectsView() {
     <tr>
       <td><code>${r.project_name}</code></td>
       <td>${fmt.num(r.event_count)}</td>
-      <td>${fmt.num(r.total_tokens)}</td>
+      ${tokenCells(r)}
       <td>${fmt.cost(r.total_cost_usd)}</td>
       <td>${fmt.ms(r.avg_process_time_ms)}</td>
     </tr>`).join('');
@@ -202,15 +227,14 @@ async function loadProjectData(project) {
   destroyChart('proj-timeseries');
   const ctx1 = document.getElementById('chart-proj-timeseries').getContext('2d');
   charts['proj-timeseries'] = new Chart(ctx1, {
-    type: 'line',
-    data: {
-      labels: ts.map(r => r.date),
-      datasets: [{ label: 'Tokens', data: ts.map(r => r.total_tokens), borderColor: CHART_COLORS[0], backgroundColor: CHART_COLORS[0] + '22', fill: true, tension: .3 }],
-    },
+    data: { labels: ts.map(r => r.date), datasets: tokenBars(ts) },
     options: {
-      responsive: true,
-      plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: 'Daily Token Usage', color: '#e2e8f0' } },
-      scales: { x: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } }, y: { ticks: { color: '#e2e8f0' }, grid: { color: '#2a2d3a' } } },
+      responsive: true, interaction: { mode: 'index' },
+      plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: 'Daily Token Usage by Type', color: '#e2e8f0' } },
+      scales: {
+        x: { stacked: true, ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } },
+        yTokens: { stacked: true, ticks: { color: '#e2e8f0', callback: v => compact.format(v) }, grid: { color: '#2a2d3a' } },
+      },
     },
   });
 
@@ -218,8 +242,8 @@ async function loadProjectData(project) {
   const ctx2 = document.getElementById('chart-proj-roles').getContext('2d');
   charts['proj-roles'] = new Chart(ctx2, {
     type: 'doughnut',
-    data: { labels: byRole.map(r => r.role), datasets: [{ data: byRole.map(r => r.total_tokens), backgroundColor: CHART_COLORS }] },
-    options: { plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: 'Tokens by Role', color: '#e2e8f0' } } },
+    data: { labels: byRole.map(r => r.role), datasets: [{ data: byRole.map(tokenSum), backgroundColor: CHART_COLORS }] },
+    options: { plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: 'Tokens by Role (all types)', color: '#e2e8f0' } } },
   });
 
   destroyChart('proj-models');
@@ -245,8 +269,7 @@ async function loadEventLog() {
       <td>${fmt.date(r.recorded_at)}</td>
       <td><code>${r.model}</code></td>
       <td>${r.role || '—'}</td>
-      <td>${fmt.num(r.prompt_tokens)}</td>
-      <td>${fmt.num(r.completion_tokens)}</td>
+      ${TOKEN_TYPES.map(t => `<td>${fmt.num(r[t.key])}</td>`).join('')}
       <td>${fmt.cost(r.estimated_cost_usd)}</td>
       <td>${fmt.ms(r.process_time_ms)}</td>
       <td>${badge(r.status)}</td>
@@ -286,8 +309,7 @@ async function loadModels() {
     <tr>
       <td><code>${r.model}</code></td>
       <td>${fmt.num(r.event_count)}</td>
-      <td>${fmt.num(r.avg_prompt_tokens)}</td>
-      <td>${fmt.num(r.avg_completion_tokens)}</td>
+      ${tokenCells(r)}
       <td>${fmt.ms(r.avg_process_time_ms)}</td>
       <td>${fmt.cost(r.total_cost_usd)}</td>
       <td>${r.cost_per_1k_tokens != null ? '$' + r.cost_per_1k_tokens.toFixed(4) : '—'}</td>
@@ -358,7 +380,7 @@ async function loadComplexity() {
     data: {
       labels: byComplexity.map(r => 'Tier ' + r.complexity),
       datasets: [{
-        label: 'Avg Tokens',
+        label: 'Avg input + output tokens',
         data: byComplexity.map(r => r.avg_tokens ?? 0),
         backgroundColor: CHART_COLORS,
       }],
@@ -367,7 +389,7 @@ async function loadComplexity() {
       responsive: true,
       plugins: {
         legend: { display: false },
-        title: { display: true, text: 'Avg Tokens by Deterministic Complexity', color: '#e2e8f0' },
+        title: { display: true, text: 'Avg Input + Output Tokens by Deterministic Complexity', color: '#e2e8f0' },
       },
       scales: {
         x: { ticks: { color: '#e2e8f0' }, grid: { color: '#2a2d3a' } },
@@ -449,7 +471,9 @@ function taskRow(item) {
     <td>${item.start_complexity == null ? '—' : 'C' + esc(item.start_complexity)}</td>
     <td>${jev}</td>
     <td class="num">${item.jev ? item.jev.confidence.toFixed(2) : '—'}</td>
-    <td class="num">${fmt.num(item.total_tokens)}</td>
+    <td class="num">${fmt.num(item.prompt_tokens)}</td>
+    <td class="num">${fmt.num(item.cache_read_tokens)} / ${fmt.num(item.cache_creation_tokens)}</td>
+    <td class="num">${fmt.num(item.completion_tokens)}</td>
     <td class="num">${fmt.cost(item.cost_usd)}${unpriced}</td>
     <td class="num">${fmt.num(item.tool_call_count)}</td>
     <td class="num">${fmt.ms(item.wall_time_ms)}</td>
@@ -638,8 +662,6 @@ function promptStateText(d) {
 function renderTaskDetail(d) {
   document.getElementById('task-detail-title').textContent = taskLabel(d);
   const completion = esc(COMPLETION_TEXT[d.completion] ?? d.completion) + (d.completed_at ? ' at ' + esc(fmt.date(d.completed_at)) : '');
-  const tokens = [d.prompt_tokens, d.completion_tokens, d.cache_read_tokens, d.cache_creation_tokens].map(fmt.num).join(' / ') +
-    ', total ' + fmt.num(d.total_tokens);
   const jev = d.jev
     ? `${d.jev.display_score.toFixed(1)}/5, confidence ${d.jev.confidence.toFixed(2)}, ${esc(d.jev.provider_used)}, ` +
       `${esc(d.jev.rubric_version)}, ${esc(fmt.date(d.jev.evaluated_at))}`
@@ -654,7 +676,8 @@ function renderTaskDetail(d) {
     ${field('Wall time', fmt.ms(d.wall_time_ms))}
     ${field('LLM requests / tools', fmt.num(d.llm_request_count) + ' / ' + fmt.num(d.tool_call_count))}
     ${field('Errors / retries', fmt.num(d.error_count) + ' / ' + fmt.num(d.retry_count))}
-    ${field('Tokens (prompt / completion / cache read / cache write)', tokens)}
+    ${TOKEN_TYPES.map(t => field(t.label + ' tokens', fmt.num(d[t.key]))).join('')}
+    ${field('Total tokens (sum)', fmt.num(d.total_tokens))}
     ${field('Cost / estimated / unpriced', fmt.cost(d.cost_usd) + ' / ' + fmt.cost(d.estimated_cost_usd) + ' / ' + fmt.num(d.unpriced_count))}
     ${field('RS-v1', d.start_complexity == null ? '—' : 'C' + esc(d.start_complexity) + ' (' + esc(d.start_complexity_method) + ')')}
     ${field('Prompt', promptStateText(d))}

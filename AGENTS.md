@@ -219,6 +219,8 @@ GET  /api/tasks/retention-status
 POST /api/tasks/purge-expired         (sensitive; dry_run=true by default)
 ```
 
+Every `by-*` grouping, `timeseries` and `project-inventory` row carries per-category sums `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens`. `prompt_tokens` never includes cache (ingest subtracts it when `input_tokens_include_cache` is set). The older `total_tokens` key stays input + output only; the dashboard labels its all-type total as a sum computed from the four fields.
+
 Ingest auth is optional and controlled by deployment configuration. If enabled, producers use the matching secret environment variable; never place it in repository config or docs.
 
 ## Development and Verification

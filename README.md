@@ -37,7 +37,7 @@ Apply it with `systemctl --user daemon-reload && systemctl --user restart token-
 
 | View | What it shows |
 |---|---|
-| Overview | Stat cards, daily token+cost line chart, top models by cost, per-project table |
+| Overview | Stat cards (input, cache read, cache write and output tokens shown separately, plus their labelled sum), daily stacked token-type bars with a cost line, top models by cost, per-project table with one column per token type |
 | Projects | Separates bounded Git repository inventory (including repositories with zero events) from event-backed observed activity; select either identity for filtered analytics |
 | Models | Cross-project latency bar chart, cost comparison table |
 | Complexity | Avg tokens by deterministic complexity tier (1–5), routing recommendations table |

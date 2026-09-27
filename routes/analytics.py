@@ -43,6 +43,19 @@ def _llm_filter(days: int):
     return (TokenEvent.recorded_at >= _cutoff(days), TokenEvent.event_type == "llm_request")
 
 
+# Per-category token sums, kept separate: prompt_tokens excludes cache for every producer
+# (ingest subtracts cache when input_tokens_include_cache is set).
+_TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
+def _token_sum_columns():
+    return [func.coalesce(func.sum(getattr(TokenEvent, name)), 0).label(name) for name in _TOKEN_FIELDS]
+
+
+def _token_sums(row) -> dict:
+    return {name: int(row[name] or 0) for name in _TOKEN_FIELDS}
+
+
 @router.get("/summary")
 async def summary(days: int = 7, session: AsyncSession = Depends(get_session)):
     priced, estimated, unpriced = _cost_columns()
@@ -109,6 +122,7 @@ async def _grouped(
             func.avg(TokenEvent.prompt_tokens).label("avg_prompt_tokens"),
             func.avg(TokenEvent.completion_tokens).label("avg_completion_tokens"),
             func.avg(TokenEvent.process_time_ms).label("avg_process_time_ms"),
+            *_token_sum_columns(),
             priced.label("total_cost_usd"),
             estimated.label("estimated_cost_usd"),
             unpriced.label("unpriced_event_count"),
@@ -133,6 +147,7 @@ async def _grouped(
             "estimated_cost_usd": round(float(row["estimated_cost_usd"] or 0), 6),
             "unpriced_event_count": int(row["unpriced_event_count"] or 0),
             "cost_per_1k_tokens": round(total_cost / total_tokens * 1000, 6) if total_tokens else None,
+            **_token_sums(row),
         }
         result.append(item)
     return result
@@ -152,6 +167,7 @@ async def project_inventory(days: int = 30, session: AsyncSession = Depends(get_
             func.count(TokenEvent.id).label("event_count"),
             func.coalesce(func.sum(TokenEvent.prompt_tokens + TokenEvent.completion_tokens), 0).label("total_tokens"),
             func.max(TokenEvent.recorded_at).label("last_activity_at"),
+            *_token_sum_columns(),
         )
         .where(*_llm_filter(days))
         .group_by(TokenEvent.project_name)
@@ -168,6 +184,7 @@ async def project_inventory(days: int = 30, session: AsyncSession = Depends(get_
                 "event_count": int(row["event_count"] or 0) if row else 0,
                 "total_tokens": int(row["total_tokens"] or 0) if row else 0,
                 "last_activity_at": row["last_activity_at"] if row else None,
+                **(_token_sums(row) if row else dict.fromkeys(_TOKEN_FIELDS, 0)),
             }
         )
     return result
@@ -225,6 +242,7 @@ async def timeseries(
             bucket.label("date"),
             func.coalesce(func.sum(TokenEvent.prompt_tokens + TokenEvent.completion_tokens), 0).label("total_tokens"),
             func.count(TokenEvent.id).label("event_count"),
+            *_token_sum_columns(),
             priced.label("total_cost_usd"),
             estimated.label("estimated_cost_usd"),
             unpriced.label("unpriced_event_count"),
@@ -242,6 +260,7 @@ async def timeseries(
             "total_cost_usd": round(float(row["total_cost_usd"] or 0), 6),
             "estimated_cost_usd": round(float(row["estimated_cost_usd"] or 0), 6),
             "unpriced_event_count": int(row["unpriced_event_count"] or 0),
+            **_token_sums(row),
         }
         for row in rows
     ]
