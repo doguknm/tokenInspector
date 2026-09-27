@@ -20,7 +20,7 @@ _Chosen by the user on 2026-09-27 (new-plan Step 3c). Every step is executed by 
 |---|---|---|---|
 | d0-discovery | Claude Code (read-only on hermes) | done 2026-09-27 — user acknowledged; decisions in Drift Log | **Blocking.** Produces `discovery-evidence.md` (see Open Items). The user acknowledges it before `_m10` backfill semantics and plugin 0a-role/0c are implemented |
 | database | Claude Code (Opus 5.5, direct) | done 2026-09-27 (`42d447a`) | After D0. Integrity-verified online backup before migrating. Deploy plugin 0b (spool) before migration v10 |
-| backend | Claude Code (Opus 5.5, direct) | not started | Part A = this repo. Part B = Hermes plugin, implemented and tested on hermes only. Order: 0a/0b → migration → Part A → 0c |
+| backend | Claude Code (Opus 5.5, direct) | in progress — Part B 0a/0b done (plugin `969401b`, `1fb00b3`), not deployed; Part A next | Part A = this repo. Part B = Hermes plugin, implemented and tested on hermes only. Order: 0a/0b → migration → Part A → 0c |
 | frontend | Claude Code (Opus 5.5, direct, `frontend-design` skill) | not started | Tasks view in `static/` (vanilla JS + Chart.js, no build step) |
 | tests-other | Claude Code (Opus 5.5, direct) | not started | Can run in parallel with frontend once database/backend lanes are complete. Plugin tests run on hermes. Includes the Playwright stub suite (`tests/browser/`) |
 | tests-e2e | Claude Code (Opus 5.5, direct, browser tools) | not started | Run after frontend lane is complete. The dev server runs against the demo DBs from `scripts/seed_tasks_demo.py` (`standard`, `many-scored`). Playwright suites stay in tests-other |
@@ -136,3 +136,7 @@ Carried out of scope from the brief: Faz 1, Faz 4, traceparent remapping, cross-
 | 2026-09-27 | Mutation checks on database controls | 5/5 caught: no `BEGIN IMMEDIATE` (2 fail), file copy instead of online backup (1), no backup verification (1), any complexity method accepted (4), reversed id tie-break (1) |
 | 2026-09-27 | AC3b on hermes — online-backup clone of prod, `init_db()` on the clone | clone integrity ok; 9,289 rows before/after, same ids, **0 changed rows**, 0 non-null new columns; version 10; integrity ok; 299 tasks, 0 prompt text. Clone and its backups deleted; prod file only read |
 | 2026-09-27 | AC3e — v9 app (`0aab993` worktree) on a migrated v10 DB (`scripts/check_v9_app_on_v10.py`) | POST 201, summary 200 |
+| 2026-09-27 | Shared scrubber `task-redact-v1` (`redaction.py` = plugin `task_redact.py`, byte-identical; same `redaction_vectors.json`) | 26 vectors + idempotency pass in both repos |
+| 2026-09-27 | Plugin 0a/0b tests (local) | 73 passed, 1 skipped (POSIX permissions) |
+| 2026-09-27 | Plugin 0a/0b tests (hermes, temp clone of the branch, Python 3.13 venv) | 74 passed (permissions test included); hermes plugin working copy untouched (`main`, clean) |
+| 2026-09-27 | Mutation checks on spool controls | 4/4 caught: no scrub before queue (1 fail), rejected replay stops the queue (1), no prompt expiry (3), auth treated as reject (2) |
