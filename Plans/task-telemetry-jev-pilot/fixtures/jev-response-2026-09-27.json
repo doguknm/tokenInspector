@@ -1,0 +1,85 @@
+{
+  "_provenance": {
+    "captured_at": "2026-09-27",
+    "captured_on": "hermes, python3 urllib, POST https://ai-gateway.vercel.sh/typesafe/v1/systemone",
+    "request": {
+      "model": "typesafe-ai/jev",
+      "state": "{\"task_prompt\": \"tokenInspector servisine yeni bir tasks tablosu ekle, additive migration yaz, Hermes plugin ve Claude Code hook olaylarini task_id ile iliskilendir, testleri guncelle.\", \"source\": \"claude-code\", \"files_touched_estimate\": 6, \"requires_tests\": true}",
+      "questions": {
+        "difficulty": {
+          "type": "score",
+          "instructions": "Rate the reasoning and coordination difficulty for a competent coding agent to complete this task correctly. Do not treat length or urgency alone as difficulty.",
+          "criteria": [
+            "Single obvious routine step",
+            "A few known steps",
+            "Multi-file / multi-step analysis with tests",
+            "Unclear root cause or multi-system coordination",
+            "Open-ended research or deep architectural uncertainty"
+          ]
+        },
+        "needs_research": {"type": "noul", "instructions": "Does this task require external research before coding?"}
+      },
+      "providerOptions": "none (default routing) — a later call with providerOptions.gateway.only=[\"typesafe-ai\"] returned 429 rate_limit_exceeded (see below)"
+    },
+    "notes": "Verbatim response body below. No credentials in it. generationId kept as-is. HTTP 200."
+  },
+  "response": {
+    "model": "typesafe-ai/jev",
+    "answers": {
+      "difficulty": {
+        "type": "score",
+        "score": 2.2,
+        "confidence": 0.83,
+        "legend": {
+          "0": "Single obvious routine step",
+          "1": "A few known steps",
+          "2": "Multi-file / multi-step analysis with tests",
+          "3": "Unclear root cause or multi-system coordination",
+          "4": "Open-ended research or deep architectural uncertainty"
+        },
+        "probabilities": {"0": 0, "1": 0, "2": 0.8, "3": 0.2, "4": 0}
+      },
+      "needs_research": {"type": "noul", "noul": 0.3}
+    },
+    "usage": {"input_tokens": 446, "output_tokens": 36},
+    "provider_metadata": {
+      "typesafe": {"confidence": {"difficulty": 0.83}},
+      "gateway": {
+        "routing": {
+          "originalModelId": "typesafe-ai/jev",
+          "resolvedProvider": "digitalocean",
+          "fallbacksAvailable": ["typesafe-ai"],
+          "planningReasoning": "System credentials planned for: digitalocean, typesafe-ai. Total execution order: typesafe-ai(system) → digitalocean(system)",
+          "canonicalSlug": "typesafe-ai/jev",
+          "finalProvider": "typesafe-ai",
+          "modelAttemptCount": 1,
+          "modelAttempts": [
+            {
+              "canonicalSlug": "typesafe-ai/jev",
+              "success": true,
+              "providerAttemptCount": 1,
+              "providerAttempts": [
+                {"provider": "typesafe-ai", "credentialType": "system", "success": true, "startTime": 1790508051132, "endTime": 1790508051370, "statusCode": 200}
+              ]
+            }
+          ],
+          "totalProviderAttemptCount": 1
+        },
+        "cost": "0.000018732",
+        "marketCost": "0.000018732",
+        "surchargeCost": "0",
+        "gatewayCost": "0.000018732",
+        "inferenceCost": "0.000018732",
+        "inputInferenceCost": "0.000018732",
+        "outputInferenceCost": "0",
+        "generationId": "gen_01M3H9HA1ENRCTQRTTVF42E24F"
+      }
+    }
+  },
+  "rate_limited_response_example": {
+    "http_status": 429,
+    "request_providerOptions": {"gateway": {"only": ["typesafe-ai"]}},
+    "body_prefix": "{\"error\":{\"message\":\"The upstream provider is currently experiencing high demand. Please retry shortly.\",\"type\":\"rate_limit_exceeded\",\"param\":{\"error\":\"The upstream provider is currently experiencing high demand. Please retry shortly.\",\"type\":\"rate_limit_exceeded\",\"statusCode\":429,\"name\":\"RateLimitExceededError\",\"message\":\"The upstream provider is currently experiencing high demand. Please retry shortly.\"}},\"providerMetadata\":{\"gateway\":{\"routing\":{\"originalModelId\":\"typesafe-ai/jev\",\"resolvedProvider\":\"typesafe-ai\",\"fallbacksAvailable\":[],\"canonicalSlug\":\"typesafe-ai/jev\",\"modelAttemptCount\": ... (truncated in capture)",
+    "note": "retry-after header presence was not recorded in this capture"
+  }
+}
