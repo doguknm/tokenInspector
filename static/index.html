@@ -124,10 +124,43 @@
     <section id="view-complexity" class="view hidden">
       <div class="toolbar">
         <h2>Complexity Analytics</h2>
+        <select id="cx-project" aria-label="Project"><option value="">All projects</option></select>
+        <select id="cx-model" aria-label="Model"><option value="">All models</option></select>
+        <select id="cx-method" aria-label="Complexity method"><option value="request-shape-v1">request-shape-v1</option></select>
+        <div class="days-picker" role="group" aria-label="Time window">
+          <button class="cx-day" data-days="7">7d</button>
+          <button class="cx-day active" data-days="30">30d</button>
+          <button class="cx-day" data-days="90">90d</button>
+        </div>
       </div>
-      <h3>Avg Input + Output Tokens by Deterministic Complexity</h3>
-      <div class="chart-box" style="max-width:600px; margin-bottom:24px;">
+      <p id="cx-note" class="status-line">Tier = request-shape-v1 complexity of each LLM call.</p>
+      <p id="cx-error" class="muted hidden"></p>
+      <p id="cx-empty" class="muted hidden">No LLM calls with a complexity tier for these filters.</p>
+      <div class="chart-box cx-chart">
+        <div class="toolbar cx-chart-head">
+          <select id="cx-metric" aria-label="Chart metric">
+            <option value="calls">Calls per tier by model</option>
+            <option value="tasks">Tasks per tier by model</option>
+            <option value="tokens">Avg tokens per task (all types) by model</option>
+            <option value="cost">Avg priced cost per task by model</option>
+          </select>
+        </div>
         <canvas id="chart-complexity"></canvas>
+      </div>
+      <h3>Volume and tokens per tier</h3>
+      <div class="table-wrap">
+        <table id="table-cx-tiers">
+          <thead><tr><th>Tier</th><th class="num">Calls</th><th class="num">Tasks</th><th class="num">Input</th><th class="num">Cache read</th><th class="num">Cache write</th><th class="num">Output</th><th class="num">Priced cost</th><th class="num">Unpriced calls</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3>Tier × model</h3>
+      <p class="status-line">Token and cost values are per task, per call below. “lowest” marks the lowest priced cost per task or latency in a tier, among models with at least 5 tasks and full pricing. Completion counts how tasks ended, not whether they succeeded.</p>
+      <div class="table-wrap">
+        <table id="table-cx-matrix">
+          <thead><tr><th>Tier</th><th>Model</th><th class="num">Calls</th><th class="num">Tasks</th><th class="num">Input / task</th><th class="num">Cache read / task</th><th class="num">Cache write / task</th><th class="num">Output / task</th><th class="num">Avg latency</th><th class="num">Avg TTFT</th><th class="num">Error rate</th><th class="num">Cost / task</th><th class="num">Priced cost</th><th class="num">Cost / 1K output</th><th title="How tasks ended, not whether they succeeded">Completion (end / next / inferred / open)</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
       <h3>Routing Recommendations</h3>
       <p id="complexity-no-recs" class="hidden" style="color:#8892a4;">No recommendations yet — need ≥3 events per (role, complexity, model) bucket.</p>

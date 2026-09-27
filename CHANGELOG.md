@@ -6,6 +6,7 @@ All notable user-visible and operational changes are documented here.
 
 ### Added
 
+- Complexity view: tier × model comparison (calls, tasks, per-call and per-task token split, latency, TTFT, error rate, priced cost per task, completion counts, low-sample marks) with project/model/method/day filters, backed by the new `GET /api/analytics/complexity-matrix`; the demo seed now carries per-call tiers and two priced models.
 - Task telemetry (schema v10): one task per Hermes turn, derived at ingest and backfilled metadata-only, with deterministic start complexity, arrival-order-independent completion and hierarchy from subagent starts.
 - Tasks view and Tasks API (list, detail, blind labels), `/api/meta` feature gates and config preflight.
 - Gated, scrubbed task prompt storage (`STORE_TASK_PROMPTS`) with 30-day retention from producer capture time across DB, WAL and backups (ADR-002).

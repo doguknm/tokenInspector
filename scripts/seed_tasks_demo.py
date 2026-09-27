@@ -118,7 +118,8 @@ def seed(conn: sqlite3.Connection, variant: str, now: datetime) -> None:
     t2 = s.task("demo-alpha", "alpha-s1", "demo-task-2", 2, rs1=4, prompt_state="retained",
                 completion="next_task", completed_at=s.ago(1, 5))
     s.event("demo-alpha", "alpha-s1", "demo-task-2", 2)
-    s.event("demo-alpha", "alpha-s1", "demo-task-2", 2, priced=False, minutes=1)
+    s.event("demo-alpha", "alpha-s1", "demo-task-2", 2, priced=False, minutes=1, complexity=4,
+            complexity_method="request-shape-v1")
     s.jev(t2, raw=3.6, confidence=0.61, probabilities=[0, 0, 0.1, 0.2, 0.7], provider="digitalocean")
     t1 = s.task("demo-alpha", "alpha-s1", "demo-task-1", 1, rs1=2, prompt=f"Refactor the parser. {CANARY_PROMPT}",
                 prompt_state="retained", completion="session_end", completed_at=s.ago(0, 30))
@@ -146,7 +147,16 @@ def seed(conn: sqlite3.Connection, variant: str, now: datetime) -> None:
         s.task("demo-beta", f"beta-f{i:02d}", turn, days, rs1=1 + (i % 5),
                prompt_state="expired" if i == 59 else "none",
                last_seen=shared_last_seen if i <= 10 else None)
-        s.event("demo-beta", f"beta-f{i:02d}", turn, days)
+        # Complexity view: per-call tier and two priced models with distinct cost and latency.
+        haiku = i % 2 == 0
+        call = {"complexity": 1 + (i % 5), "complexity_method": "request-shape-v1",
+                "model": "claude-haiku-4-5" if haiku else "claude-sonnet-4-6",
+                "estimated_cost_usd": 0.00014 if haiku else 0.00042,
+                "process_time_ms": (900 + (i % 5) * 80) if haiku else (2400 + (i % 7) * 100),
+                "ttft_ms": 250 if haiku else 600}
+        s.event("demo-beta", f"beta-f{i:02d}", turn, days, **call, status="error" if i == 7 else "success")
+        if i % 4 == 0:  # a follow-up call in the same task
+            s.event("demo-beta", f"beta-f{i:02d}", turn, days, minutes=1, **call)
     s.task("demo-beta", "beta-old", "demo-old", 40, rs1=3, hierarchy="unknown")
     s.event("demo-beta", "beta-old", "demo-old", 40)
     if variant == "many-scored":

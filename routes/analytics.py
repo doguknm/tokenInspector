@@ -4,13 +4,14 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import case, func, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, func, select, text
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database import get_session
 from models import TokenEvent
 from project_inventory import discover_projects
+from routes.tasks import _completion
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -379,3 +380,172 @@ async def by_role_model_complexity(days: int = 30, project: Optional[str] = None
         }
         for row in rows
     ]
+
+
+# ── Complexity matrix: tier x model volume, tokens, latency, errors, cost, completion ──────────
+LOW_SAMPLE_TASKS = 5
+_METHOD_SQL = (
+    "COALESCE(e.complexity_method, json_extract(e.tags_json, '$.complexity_method'), "
+    "json_extract(e.tags_json, '$.complexity_version'))"
+)
+_COMPLETIONS = ("session_end", "next_task", "inferred", "open", "unknown")
+
+
+def _new_bucket() -> dict:
+    bucket = {"calls": 0, "calls_without_task": 0, "tasks": set(), "errors": 0,
+              "lat_sum": 0, "lat_n": 0, "ttft_sum": 0, "ttft_n": 0, "priced_calls": 0, "unpriced_calls": 0,
+              "estimated_calls": 0, "priced_cost": 0.0, "task_priced_cost": 0.0,
+              "completion": dict.fromkeys(_COMPLETIONS, 0)}
+    for name in _TOKEN_FIELDS:
+        bucket[name] = 0
+        bucket["task_" + name] = 0
+    return bucket
+
+
+def _add(bucket: dict, row, key, completion: Optional[str]) -> None:
+    calls = int(row["calls"])
+    bucket["calls"] += calls
+    for name in ("errors", "lat_sum", "lat_n", "ttft_sum", "ttft_n", "priced_calls", "unpriced_calls",
+                 "estimated_calls"):
+        bucket[name] += int(row[name] or 0)
+    bucket["priced_cost"] += float(row["priced_cost"] or 0)
+    for name in _TOKEN_FIELDS:
+        bucket[name] += int(row[name] or 0)
+    if key is None:
+        bucket["calls_without_task"] += calls
+        return
+    bucket["task_priced_cost"] += float(row["priced_cost"] or 0)
+    for name in _TOKEN_FIELDS:
+        bucket["task_" + name] += int(row[name] or 0)
+    if key not in bucket["tasks"]:
+        bucket["tasks"].add(key)
+        bucket["completion"][completion or "unknown"] += 1
+
+
+def _avg(total, count, digits=0):
+    return round(total / count, digits) if count else None
+
+
+def _finish(bucket: dict) -> dict:
+    calls, tasks = bucket["calls"], len(bucket["tasks"])
+    priced = bucket["priced_calls"] > 0
+    return {
+        "calls": calls,
+        "tasks": tasks,
+        "calls_without_task": bucket["calls_without_task"],
+        **{name: bucket[name] for name in _TOKEN_FIELDS},
+        # Per call over every call; per task over the calls that belong to a task.
+        "per_call": {name: _avg(bucket[name], calls) for name in _TOKEN_FIELDS},
+        "per_task": {name: _avg(bucket["task_" + name], tasks) for name in _TOKEN_FIELDS},
+        "avg_process_time_ms": _avg(bucket["lat_sum"], bucket["lat_n"]),
+        "avg_ttft_ms": _avg(bucket["ttft_sum"], bucket["ttft_n"]),
+        "error_count": bucket["errors"],
+        "error_rate": round(bucket["errors"] / calls, 6) if calls else 0.0,
+        "priced_calls": bucket["priced_calls"],
+        "unpriced_calls": bucket["unpriced_calls"],
+        "estimated_calls": bucket["estimated_calls"],
+        # Priced cost only; None when nothing is priced, so unpriced usage never reads as $0.
+        "priced_cost_usd": round(bucket["priced_cost"], 6) if priced else None,
+        "avg_priced_cost_per_call": _avg(bucket["priced_cost"], bucket["priced_calls"], 8) if priced else None,
+        "avg_priced_cost_per_task": _avg(bucket["task_priced_cost"], tasks, 8) if priced else None,
+        "priced_cost_per_1k_output": (
+            round(bucket["priced_cost"] / bucket["completion_tokens"] * 1000, 6)
+            if priced and bucket["completion_tokens"] else None
+        ),
+        "cost_complete": priced and bucket["unpriced_calls"] == 0 and bucket["estimated_calls"] == 0,
+        "completion": bucket["completion"],
+        "low_sample": tasks < LOW_SAMPLE_TASKS,
+    }
+
+
+def _mark_best(cells: list[dict]) -> None:
+    """Flag the lowest cost per task and lowest latency per tier among adequately sampled models."""
+    tiers: dict[int, list[dict]] = {}
+    for cell in cells:
+        cell["lowest_cost_per_task"] = False
+        cell["lowest_latency"] = False
+        if not cell["low_sample"]:
+            tiers.setdefault(cell["complexity"], []).append(cell)
+    for group in tiers.values():
+        for flag, metric, needs_full_cost in (
+            ("lowest_cost_per_task", "avg_priced_cost_per_task", True),
+            ("lowest_latency", "avg_process_time_ms", False),
+        ):
+            candidates = [c for c in group if c[metric] is not None and (c["cost_complete"] or not needs_full_cost)]
+            if len(candidates) < 2:
+                continue
+            best = min(c[metric] for c in candidates)
+            for c in candidates:
+                c[flag] = c[metric] == best
+
+
+@router.get("/complexity-matrix")
+async def complexity_matrix(
+    days: int = 30,
+    project: Optional[str] = None,
+    model: list[str] = Query(default=[]),
+    method: str = "request-shape-v1",
+    session: AsyncSession = Depends(get_session),
+):
+    """LLM calls grouped by call complexity tier and model.
+
+    A task is one Hermes turn, keyed by (project, session, turn). A task whose calls span several
+    tiers or models counts once in each (tier, model) cell and in each tier it has calls in.
+    """
+    where = "e.recorded_at >= :cutoff AND e.event_type = 'llm_request' AND e.complexity IS NOT NULL"
+    params: dict = {"cutoff": _cutoff(days)}
+    methods = [r[0] for r in (await session.execute(
+        text(f"SELECT DISTINCT {_METHOD_SQL} AS m FROM token_events e WHERE {where} AND m IS NOT NULL ORDER BY m"),
+        params,
+    ))]
+    params["method"] = method
+    where += f" AND {_METHOD_SQL} = :method"
+    projects = [r[0] for r in (await session.execute(
+        text(f"SELECT DISTINCT e.project_name FROM token_events e WHERE {where} ORDER BY 1"), params))]
+    if project:
+        where += " AND e.project_name = :project"
+        params["project"] = project
+    models = [r[0] for r in (await session.execute(
+        text(f"SELECT DISTINCT COALESCE(e.model, 'unknown') FROM token_events e WHERE {where} ORDER BY 1"), params))]
+    if model:
+        for i, name in enumerate(model):
+            params[f"m{i}"] = name
+        where += f" AND COALESCE(e.model, 'unknown') IN ({', '.join(f':m{i}' for i in range(len(model)))})"
+    token_sums = ", ".join(f"SUM(e.{name}) AS {name}" for name in _TOKEN_FIELDS)
+    query = text(
+        "SELECT e.complexity AS tier, COALESCE(e.model, 'unknown') AS model, e.project_name AS project, "
+        f"COALESCE(e.session_id, '') AS s, e.turn_id AS turn, COUNT(*) AS calls, {token_sums}, "
+        "SUM(e.status <> 'success') AS errors, "
+        "SUM(e.process_time_ms) AS lat_sum, COUNT(e.process_time_ms) AS lat_n, "
+        "SUM(e.ttft_ms) AS ttft_sum, COUNT(e.ttft_ms) AS ttft_n, "
+        "SUM(e.cost_status = 'priced') AS priced_calls, "
+        "SUM(e.cost_status = 'unpriced') AS unpriced_calls, "
+        "SUM(e.cost_status IN ('partial', 'estimated', 'legacy')) AS estimated_calls, "
+        "SUM(CASE WHEN e.cost_status = 'priced' THEN e.estimated_cost_usd END) AS priced_cost, "
+        "MAX(t.completion) AS completion, MAX(t.completed_at) AS completed_at, "
+        "MAX(t.last_seen_at) AS last_seen_at, COUNT(t.id) AS has_task "
+        "FROM token_events e LEFT JOIN tasks t ON t.project_name = e.project_name "
+        "AND t.session_id = COALESCE(e.session_id, '') AND t.turn_id = e.turn_id "
+        f"WHERE {where} GROUP BY tier, model, project, s, turn"
+    )
+    now_dt = datetime.now(timezone.utc)
+    cells: dict[tuple[int, str], dict] = {}
+    tiers: dict[int, dict] = {}
+    for row in (await session.execute(query, params)).mappings():
+        key = (row["project"], row["s"], row["turn"]) if row["turn"] is not None else None
+        completion = _completion(dict(row), now_dt)[0] if row["has_task"] else None
+        for bucket in (cells.setdefault((row["tier"], row["model"]), _new_bucket()),
+                       tiers.setdefault(row["tier"], _new_bucket())):
+            _add(bucket, row, key, completion)
+    cell_items = [{"complexity": tier, "model": name, **_finish(bucket)} for (tier, name), bucket in sorted(cells.items())]
+    _mark_best(cell_items)
+    return {
+        "method": method,
+        "tier_source": "llm_call",
+        "low_sample_tasks": LOW_SAMPLE_TASKS,
+        "methods": methods,
+        "projects": projects,
+        "models": models,
+        "tiers": [{"complexity": tier, **_finish(bucket)} for tier, bucket in sorted(tiers.items())],
+        "cells": cell_items,
+    }

@@ -202,6 +202,7 @@ GET /api/analytics/timeseries
 GET /api/analytics/by-complexity
 GET /api/analytics/routing-recommendations
 GET /api/analytics/by-role-model-complexity
+GET /api/analytics/complexity-matrix   (days, project, model (repeatable), method=request-shape-v1)
 
 GET/POST/DELETE /api/settings/pricing
 GET/POST/DELETE /api/settings/aliases
@@ -220,6 +221,8 @@ POST /api/tasks/purge-expired         (sensitive; dry_run=true by default)
 ```
 
 Every `by-*` grouping, `timeseries` and `project-inventory` row carries per-category sums `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens`. `prompt_tokens` never includes cache (ingest subtracts it when `input_tokens_include_cache` is set). The older `total_tokens` key stays input + output only; the dashboard labels its all-type total as a sum computed from the four fields.
+
+`GET /api/analytics/complexity-matrix` groups `llm_request` events by the per-call `complexity` tier (method from `complexity_method`, else the `complexity_method`/`complexity_version` tag; default `request-shape-v1`, never JEV) and model. Response: `method`, `tier_source` (`llm_call`), `low_sample_tasks` (5), filter options `methods`/`projects`/`models` (each ignores its own filter), `tiers[]` and `cells[]` (`complexity`, `model`). Each tier/cell has `calls`, `tasks` (distinct project+session+turn), `calls_without_task`, the four token sums, `per_call` and `per_task` token dicts (per task uses only task-attributed calls), `avg_process_time_ms`, `avg_ttft_ms`, `error_count`, `error_rate` (status ≠ success), `priced_calls`/`unpriced_calls`/`estimated_calls`, `priced_cost_usd`, `avg_priced_cost_per_call`, `avg_priced_cost_per_task`, `priced_cost_per_1k_output` (all cost fields null when nothing is priced), `cost_complete`, `completion` counts (`session_end`/`next_task`/`inferred`/`open`/`unknown`) and `low_sample` (tasks < 5); cells also carry `lowest_cost_per_task`/`lowest_latency` among non-low-sample models in the tier (cost only when `cost_complete`, at least two candidates). A task with calls in several tiers or models counts once in each.
 
 Ingest auth is optional and controlled by deployment configuration. If enabled, producers use the matching secret environment variable; never place it in repository config or docs.
 

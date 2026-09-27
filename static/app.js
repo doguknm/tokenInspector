@@ -367,36 +367,151 @@ document.getElementById('pricing-add-form').addEventListener('submit', async e =
 });
 
 // ── Complexity ────────────────────────────────────────────────────────────────
-async function loadComplexity() {
-  const [byComplexity, recs] = await Promise.all([
-    api('/api/analytics/by-complexity?days=30'),
-    api('/api/analytics/routing-recommendations?days=30'),
-  ]);
+// Every API string goes through esc(). The tier is the deterministic per-call complexity, never JEV.
+let cxDays = 30;
+let cxProject = '';
+let cxModel = '';
+let cxMethod = 'request-shape-v1';
+let cxGen = 0;
+let cxData = null;
 
+const CX_METRICS = {
+  calls: { title: 'Calls per tier by model', stacked: true, value: c => c.calls, tick: v => fmt.num(v) },
+  tasks: { title: 'Tasks per tier by model', stacked: true, value: c => c.tasks, tick: v => fmt.num(v) },
+  tokens: { title: 'Avg tokens per task (all types) by model', stacked: false, value: c => tokenSum(c.per_task), tick: v => compact.format(v) },
+  cost: { title: 'Avg priced cost per task by model', stacked: false, value: c => c.avg_priced_cost_per_task, tick: v => '$' + Number(v).toFixed(5) },
+};
+
+function fillSelect(id, values, current, allLabel) {
+  const select = document.getElementById(id);
+  select.innerHTML = (allLabel ? `<option value="">${esc(allLabel)}</option>` : '') +
+    values.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+  select.value = current;
+}
+
+function cxQuery() {
+  const params = new URLSearchParams({ days: cxDays, method: cxMethod });
+  if (cxProject) params.set('project', cxProject);
+  if (cxModel) params.set('model', cxModel);
+  return params.toString();
+}
+
+function renderComplexityChart() {
   destroyChart('complexity');
-  const ctx = document.getElementById('chart-complexity').getContext('2d');
-  charts['complexity'] = new Chart(ctx, {
+  if (!cxData || !cxData.cells.length) return;
+  const metric = CX_METRICS[document.getElementById('cx-metric').value] || CX_METRICS.calls;
+  const tiers = cxData.tiers.map(t => t.complexity);
+  const models = [...new Set(cxData.cells.map(c => c.model))];
+  const datasets = models.map((model, i) => ({
+    label: model,
+    data: tiers.map(tier => {
+      const cell = cxData.cells.find(c => c.complexity === tier && c.model === model);
+      return cell ? metric.value(cell) : null;
+    }),
+    backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+  }));
+  charts['complexity'] = new Chart(document.getElementById('chart-complexity').getContext('2d'), {
     type: 'bar',
-    data: {
-      labels: byComplexity.map(r => 'Tier ' + r.complexity),
-      datasets: [{
-        label: 'Avg input + output tokens',
-        data: byComplexity.map(r => r.avg_tokens ?? 0),
-        backgroundColor: CHART_COLORS,
-      }],
-    },
+    data: { labels: tiers.map(t => 'C' + t), datasets },
     options: {
-      responsive: true,
-      plugins: {
-        legend: { display: false },
-        title: { display: true, text: 'Avg Input + Output Tokens by Deterministic Complexity', color: '#e2e8f0' },
-      },
+      responsive: true, interaction: { mode: 'index' },
+      plugins: { legend: { labels: { color: '#e2e8f0' } }, title: { display: true, text: metric.title, color: '#e2e8f0' } },
       scales: {
-        x: { ticks: { color: '#e2e8f0' }, grid: { color: '#2a2d3a' } },
-        y: { ticks: { color: '#8892a4', callback: v => fmt.num(v) }, grid: { color: '#2a2d3a' } },
+        x: { stacked: metric.stacked, ticks: { color: '#e2e8f0' }, grid: { color: '#2a2d3a' } },
+        y: { stacked: metric.stacked, ticks: { color: '#8892a4', callback: metric.tick }, grid: { color: '#2a2d3a' } },
       },
     },
   });
+}
+
+const callsCell = r => `<td class="num">${fmt.num(r.calls)}` +
+  (r.calls_without_task ? `<span class="sub">${fmt.num(r.calls_without_task)} without task</span>` : '') + '</td>';
+
+function tierRow(t) {
+  const tokens = TOKEN_TYPES.map(k => `<td class="num">${fmt.num(t[k.key])}` +
+    `<span class="sub">${fmt.num(t.per_call[k.key])} / call</span><span class="sub">${fmt.num(t.per_task[k.key])} / task</span></td>`).join('');
+  return `<tr>
+    <td>C${esc(t.complexity)}</td>
+    ${callsCell(t)}
+    <td class="num">${fmt.num(t.tasks)}</td>
+    ${tokens}
+    <td class="num">${t.priced_cost_usd == null ? '—' : fmt.cost(t.priced_cost_usd)}</td>
+    <td class="num">${fmt.num(t.unpriced_calls)}</td>
+  </tr>`;
+}
+
+function matrixRow(c) {
+  const lowest = (flag, title) => flag ? `<span class="best" title="${esc(title)}">lowest</span>` : '';
+  const tokens = TOKEN_TYPES.map(k => `<td class="num">${fmt.num(c.per_task[k.key])}` +
+    `<span class="sub">${fmt.num(c.per_call[k.key])} / call</span></td>`).join('');
+  let cost = '<span class="badge badge-muted">unpriced</span>';
+  if (c.avg_priced_cost_per_task != null) {
+    const partial = c.unpriced_calls > 0 ? `${fmt.num(c.unpriced_calls)} unpriced`
+      : c.estimated_calls > 0 ? `${fmt.num(c.estimated_calls)} estimated` : '';
+    cost = fmt.cost(c.avg_priced_cost_per_task) + lowest(c.lowest_cost_per_task, 'Lowest priced cost per task in this tier') +
+      (partial ? ` <span class="badge badge-muted">${partial}</span>` : '') +
+      `<span class="sub">${fmt.cost(c.avg_priced_cost_per_call)} / call</span>`;
+  }
+  const done = c.completion;
+  const completion = [done.session_end, done.next_task, done.inferred, done.open].map(fmt.num).join(' / ') +
+    (done.unknown ? `<span class="sub">${fmt.num(done.unknown)} without task row</span>` : '');
+  return `<tr class="${c.low_sample ? 'low-sample' : ''}">
+    <td>C${esc(c.complexity)}</td>
+    <td><code>${esc(c.model)}</code></td>
+    ${callsCell(c)}
+    <td class="num">${fmt.num(c.tasks)}${c.low_sample ? ' <span class="badge badge-muted">low sample</span>' : ''}</td>
+    ${tokens}
+    <td class="num">${fmt.ms(c.avg_process_time_ms)}${lowest(c.lowest_latency, 'Lowest avg latency in this tier')}</td>
+    <td class="num">${fmt.ms(c.avg_ttft_ms)}</td>
+    <td class="num">${(c.error_rate * 100).toFixed(1)}%</td>
+    <td class="num">${cost}</td>
+    <td class="num">${c.priced_cost_usd == null ? '—' : fmt.cost(c.priced_cost_usd)}</td>
+    <td class="num">${c.priced_cost_per_1k_output == null ? '—' : fmt.cost(c.priced_cost_per_1k_output)}</td>
+    <td>${completion}</td>
+  </tr>`;
+}
+
+async function loadComplexity() {
+  const gen = ++cxGen;
+  const errorEl = document.getElementById('cx-error');
+  const recParams = new URLSearchParams({ days: cxDays });
+  if (cxProject) recParams.set('project', cxProject);
+  let data, recs;
+  try {
+    [data, recs] = await Promise.all([
+      api(`/api/analytics/complexity-matrix?${cxQuery()}`),
+      api(`/api/analytics/routing-recommendations?${recParams}`),
+    ]);
+  } catch (err) {
+    if (gen !== cxGen) return;
+    cxData = null;
+    destroyChart('complexity');
+    document.querySelector('#table-cx-tiers tbody').innerHTML = '';
+    document.querySelector('#table-cx-matrix tbody').innerHTML = '';
+    errorEl.textContent = 'Could not load complexity analytics: ' + err.message;
+    errorEl.classList.remove('hidden');
+    return;
+  }
+  if (gen !== cxGen) return;
+  errorEl.classList.add('hidden');
+  // A selected project or model that has no data in this window is cleared, so the selector and the request agree.
+  const staleProject = cxProject && !data.projects.includes(cxProject);
+  const staleModel = cxModel && !data.models.includes(cxModel);
+  if (staleProject || staleModel) {
+    if (staleProject) cxProject = '';
+    if (staleModel) cxModel = '';
+    return loadComplexity();
+  }
+  cxData = data;
+  fillSelect('cx-project', data.projects, cxProject, 'All projects');
+  fillSelect('cx-model', data.models, cxModel, 'All models');
+  fillSelect('cx-method', data.methods.includes(cxMethod) ? data.methods : [cxMethod, ...data.methods], cxMethod);
+  document.getElementById('cx-note').textContent = `Tier = ${data.method} complexity of each LLM call ` +
+    '(deterministic request shape, not JEV). A task is one Hermes turn; a task with calls in several tiers or models counts in each.';
+  document.getElementById('cx-empty').classList.toggle('hidden', data.cells.length > 0);
+  renderComplexityChart();
+  document.querySelector('#table-cx-tiers tbody').innerHTML = data.tiers.map(tierRow).join('');
+  document.querySelector('#table-cx-matrix tbody').innerHTML = data.cells.map(matrixRow).join('');
 
   const noRecs = document.getElementById('complexity-no-recs');
   const tbody = document.querySelector('#table-recs tbody');
@@ -416,6 +531,19 @@ async function loadComplexity() {
       </tr>`).join('');
   }
 }
+
+document.querySelectorAll('.cx-day').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.cx-day').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    cxDays = parseInt(btn.dataset.days, 10);
+    loadComplexity();
+  });
+});
+document.getElementById('cx-project').addEventListener('change', e => { cxProject = e.target.value; loadComplexity(); });
+document.getElementById('cx-model').addEventListener('change', e => { cxModel = e.target.value; loadComplexity(); });
+document.getElementById('cx-method').addEventListener('change', e => { cxMethod = e.target.value; loadComplexity(); });
+document.getElementById('cx-metric').addEventListener('change', renderComplexityChart);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadOverview();
