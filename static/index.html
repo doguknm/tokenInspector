@@ -15,6 +15,7 @@
       <a href="#" data-view="projects" class="nav-link">Projects</a>
       <a href="#" data-view="models" class="nav-link">Models</a>
       <a href="#" data-view="complexity" class="nav-link">Complexity</a>
+      <a href="#" data-view="tasks" class="nav-link">Tasks</a>
       <a href="#" data-view="settings" class="nav-link">Settings</a>
     </div>
   </nav>
@@ -129,6 +130,53 @@
           <thead><tr><th>Role</th><th>Complexity</th><th>Current Model</th><th>Recommended Model</th><th>Est. Savings</th><th>Data Points</th></tr></thead>
           <tbody></tbody>
         </table>
+      </div>
+    </section>
+
+    <!-- TASKS -->
+    <section id="view-tasks" class="view hidden">
+      <div class="toolbar">
+        <h2>Tasks</h2>
+        <select id="tasks-project" aria-label="Project"><option value="">All projects</option></select>
+        <label class="check"><input type="checkbox" id="tasks-scored-only" /> Scored only</label>
+        <label class="check"><input type="checkbox" id="tasks-root-only" /> Root tasks only</label>
+        <div class="days-picker" role="group" aria-label="Time window">
+          <button class="tasks-day" id="tasks-days-7" data-days="7">7d</button>
+          <button class="tasks-day active" id="tasks-days-30" data-days="30">30d</button>
+          <button class="tasks-day" id="tasks-days-90" data-days="90">90d</button>
+        </div>
+      </div>
+      <p id="tasks-jev-status" class="status-line">JEV: loading…</p>
+      <p id="tasks-error" class="muted hidden"></p>
+      <div class="chart-box tasks-chart">
+        <canvas id="chart-tasks-scatter"></canvas>
+        <p id="tasks-chart-cap" class="muted hidden"></p>
+        <p id="tasks-chart-empty" class="muted hidden">No scored tasks in this window.</p>
+        <p id="tasks-chart-error" class="muted hidden">Could not load chart.</p>
+      </div>
+      <div class="toolbar">
+        <h3>Tasks in window</h3>
+        <div class="pagination">
+          <button id="tasks-prev" aria-label="Previous page">←</button>
+          <span id="tasks-page-info"></span>
+          <button id="tasks-next" aria-label="Next page">→</button>
+        </div>
+      </div>
+      <p id="tasks-empty" class="muted hidden">No tasks in this window.</p>
+      <div class="table-wrap">
+        <table id="table-tasks">
+          <thead><tr><th>Last seen</th><th>Project</th><th>Task</th><th>RS-v1</th><th>JEV</th><th>Conf.</th><th>Tokens</th><th>Cost</th><th>Tools</th><th>Wall time</th><th>Completion</th><th>Prompt</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="task-detail" class="task-detail hidden" role="region" aria-label="Task detail">
+        <div class="detail-head">
+          <h3 id="task-detail-title">Task</h3>
+          <button id="task-detail-close" type="button">Close</button>
+        </div>
+        <div id="task-detail-body"></div>
+        <div id="task-probs-box" class="chart-box probs-box hidden"><canvas id="chart-task-probs"></canvas></div>
+        <div id="task-detail-tables"></div>
       </div>
     </section>
 
