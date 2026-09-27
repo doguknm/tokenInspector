@@ -11,7 +11,7 @@ from sqlmodel import select
 import features
 from database import AsyncSessionLocal, DB_PATH, init_db
 from models import PricingRule, SEED_PRICING, _now
-from routes import analytics, events, meta, settings
+from routes import analytics, events, meta, settings, tasks
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +54,8 @@ app = FastAPI(title="Token Inspector", lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=features.host_list())
 app.include_router(meta.router)
 app.include_router(events.router)
+tasks.register_detail_route()
+app.include_router(tasks.router)
 app.include_router(analytics.router)
 app.include_router(settings.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
