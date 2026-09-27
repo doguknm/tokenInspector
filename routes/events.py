@@ -15,6 +15,8 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+import features
+import task_store
 from auth import require_ingest_auth
 from complexity_scorer import score_complexity
 from database import get_session
@@ -25,6 +27,7 @@ router = APIRouter(prefix="/api/events", tags=["events"])
 _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SECRET_TAG_RE = re.compile(r"(key|token|secret|password|auth|credential|bearer)", re.I)
 _TRUE = {"1", "true", "yes", "on"}
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-/]{1,128}$")
 
 
 class EventIn(BaseModel):
@@ -79,6 +82,21 @@ class EventIn(BaseModel):
     prompt_length: Optional[int] = Field(default=None, ge=0)
     prompt_text: Optional[str] = Field(default=None, max_length=3000)
     complexity: Optional[int] = Field(default=None, ge=1, le=5)
+    complexity_method: Optional[str] = Field(default=None, max_length=32)
+
+    # Task fields (task = one Hermes turn; the parent is identified by its session + turn).
+    task_hierarchy: Optional[Literal["root", "child", "unknown"]] = None
+    parent_session_id: Optional[str] = Field(default=None, max_length=128)
+    parent_turn_id: Optional[str] = Field(default=None, max_length=128)
+    task_prompt_text: Optional[str] = Field(default=None, max_length=200_000)
+    task_prompt_captured_at: Optional[str] = None
+
+    request_system_chars: Optional[int] = Field(default=None, ge=0)
+    request_history_chars: Optional[int] = Field(default=None, ge=0)
+    request_tool_output_chars: Optional[int] = Field(default=None, ge=0)
+    request_file_content_chars: Optional[int] = Field(default=None, ge=0)
+    request_file_ref_count: Optional[int] = Field(default=None, ge=0)
+    request_tool_names: Optional[list[str]] = Field(default=None, max_length=32)
 
     @model_validator(mode="before")
     @classmethod
@@ -100,18 +118,28 @@ class EventIn(BaseModel):
                 data[target] = data[source]
         return data
 
-    @field_validator("occurred_at")
+    @field_validator("occurred_at", "task_prompt_captured_at")
     @classmethod
-    def validate_occurred_at(cls, value: Optional[str]) -> Optional[str]:
+    def validate_occurred_at(cls, value: Optional[str], info) -> Optional[str]:
         if value is None:
             return None
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError as exc:
-            raise ValueError("occurred_at must be ISO8601") from exc
+            raise ValueError(f"{info.field_name} must be ISO8601") from exc
         if parsed.tzinfo is None:
-            raise ValueError("occurred_at must include a timezone")
+            raise ValueError(f"{info.field_name} must include a timezone")
         return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    @field_validator("request_tool_names")
+    @classmethod
+    def validate_tool_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        for name in value:
+            if not _TOOL_NAME_RE.fullmatch(name):
+                raise ValueError("request_tool_names items must be 1-128 chars of [A-Za-z0-9_.:-/]")
+        return sorted(set(value))
 
 
 class EventBatchIn(BaseModel):
@@ -260,6 +288,15 @@ async def _prepare_event(body: EventIn, project_name: str, session: AsyncSession
         prompt_length=prompt_length,
         prompt_text=stored_prompt,
         complexity=body.complexity,
+        complexity_method=body.complexity_method,
+        request_system_chars=body.request_system_chars,
+        request_history_chars=body.request_history_chars,
+        request_tool_output_chars=body.request_tool_output_chars,
+        request_file_content_chars=body.request_file_content_chars,
+        request_file_ref_count=body.request_file_ref_count,
+        request_tool_names_json=(
+            json.dumps(body.request_tool_names, separators=(",", ":")) if body.request_tool_names else None
+        ),
     )
 
 
@@ -291,6 +328,17 @@ async def _insert_event(
     return stored, stored.id != event.id
 
 
+async def _derive_task(session: AsyncSession, stored: TokenEvent, body: EventIn) -> None:
+    """Task derivation in the ingest transaction; task_prompt_text never reaches token_events."""
+    await task_store.on_event_inserted(
+        session,
+        stored,
+        body,
+        capture_enabled=features.current().capture_enabled,
+        redaction=features.redaction_options(),
+    )
+
+
 @router.post("", dependencies=[Depends(require_ingest_auth)])
 async def create_event(
     body: EventIn,
@@ -305,6 +353,8 @@ async def create_event(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     stored, duplicate = await _insert_event(candidate, session)
+    if not duplicate:
+        await _derive_task(session, stored, body)
     await session.commit()
     response.status_code = 200 if duplicate else 201
     if not duplicate and stored.prompt_text and stored.complexity is None:
@@ -333,6 +383,7 @@ async def create_events_batch(
                 duplicates += 1
             else:
                 inserted += 1
+                await _derive_task(session, stored, parsed)
                 if stored.prompt_text and stored.complexity is None:
                     scoring.append(stored)
             items.append(_result(stored, duplicate=duplicate, index=index))
