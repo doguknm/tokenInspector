@@ -20,7 +20,18 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8100
 
 Production on this machine is managed by the `token-inspector.service` systemd user unit and stores SQLite outside the repository. Do not delete a repository-local database expecting to reset production.
 
-Open http://127.0.0.1:8100
+Open http://127.0.0.1:8100 on the server itself.
+
+**Remote dashboard (from another tailnet machine):** hermes has no desktop, so the dashboard is served to the tailnet by `tailscale serve`, which proxies `https://hermes.tail3a755d.ts.net` to `127.0.0.1:8100`. The service still binds loopback only. It is reachable from tailnet devices only, never from the internet. The Host and Origin allowlists must include that name. They are set in a drop-in, not in the unit itself:
+
+```ini
+# ~/.config/systemd/user/token-inspector.service.d/remote-access.conf
+[Service]
+Environment=TOKEN_INSPECTOR_ALLOWED_HOSTS=127.0.0.1,localhost,hermes.tail3a755d.ts.net
+Environment=TOKEN_INSPECTOR_ALLOWED_ORIGINS=https://hermes.tail3a755d.ts.net
+```
+
+Apply it with `systemctl --user daemon-reload && systemctl --user restart token-inspector.service`, and check it with `tailscale serve status`. Read views need no token. Sensitive actions (prompt text, labels, evaluate, purge) still require `X-Ingest-Token`.
 
 ## Dashboard Views
 

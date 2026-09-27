@@ -246,7 +246,7 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 
 - `SQLModel.metadata.create_all` runs before migrations, so the model classes define new tables; `_m10` creates them with `checkfirst` and adds `token_events` columns in declaration order so fresh and migrated schemas agree.
 - The migration engine emits `BEGIN IMMEDIATE`; without it pysqlite autocommits DDL and a failed migration leaves partial tables.
-- `TrustedHostMiddleware` rejects any Host not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`); test clients use `http://test`, so the test conftest adds `test`.
+- `TrustedHostMiddleware` rejects any Host not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`); test clients use `http://test`, so the test conftest adds `test`. Production serves the dashboard to the tailnet through `tailscale serve` (`https://hermes.tail3a755d.ts.net` → `127.0.0.1:8100`), so that host and origin are allowed in the `remote-access.conf` systemd drop-in (README → Run).
 - Retention globs `<db>.bak-v*` but skips `-wal`/`-shm`/`-journal` siblings, which are not databases.
 - The lifespan ends with `engine.dispose()`: aiosqlite worker threads are non-daemon, so an undisposed pooled connection blocks process exit.
 - Distro SQLite builds (hermes) default `secure_delete` ON; tests that need leftover freed-page bytes set it OFF explicitly.

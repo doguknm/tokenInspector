@@ -155,3 +155,8 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
    - **Symptoms:** A test that simulates leftover freed pages (e.g. `test_backup_physical_cleanup_is_retried_until_free_pages_are_gone`) fails its own precondition on hermes: the text is already gone from the file.
    - **Root cause:** Distro SQLite builds (Debian/Ubuntu) compile with `SQLITE_SECURE_DELETE` on by default, so freed pages are zeroed even on a connection that never set the pragma.
    - **Fix/check:** Tests that need leftover bytes set `PRAGMA secure_delete=OFF` explicitly on the connection that creates them. Run the suite on hermes too before a deploy.
+
+12. **Dashboard URL returns `400 Invalid host header`**
+   - **Symptoms:** `https://hermes.tail3a755d.ts.net` (or any other proxied name) answers `Invalid host header`, although `curl http://127.0.0.1:8100/api/meta` on hermes works.
+   - **Root cause:** `TrustedHostMiddleware` (v10) only accepts `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`). `tailscale serve` forwards the tailnet name as the Host header.
+   - **Fix/check:** Keep the `~/.config/systemd/user/token-inspector.service.d/remote-access.conf` drop-in (README → Run), then run `systemctl --user daemon-reload && systemctl --user restart token-inspector.service`. Check with `curl -s -o /dev/null -w "%{http_code}" https://hermes.tail3a755d.ts.net/api/meta` from a tailnet machine (expect 200).
