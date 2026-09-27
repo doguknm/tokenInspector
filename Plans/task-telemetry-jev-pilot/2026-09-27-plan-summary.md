@@ -24,7 +24,7 @@ Judging start-of-task difficulty needs the prompt text. That reverses the docume
   - The migration runs in one explicit transaction on a dedicated migration engine (`BEGIN IMMEDIATE`).
   - It is preceded by an integrity-verified SQLite online-backup-API backup.
   - `PRAGMA secure_delete=ON`.
-- **Task identity:** `task_ref = sha256(project_name‖task_id)[:32]`, which is deterministic, so backfill and ingest agree.
+- **Task identity:** ~~`task_ref = sha256(project_name‖task_id)[:32]`~~ **superseded by D0 (Drift Log, user decision):** a task is one Hermes turn and `task_ref = sha256(project ␟ session_id ␟ turn_id)[:32]` (0x1f separator, missing session stored as `''`). Hermes' `task_id` is kept as `source_task_id` for grouping only. It is deterministic, so backfill and ingest agree.
 - **Task derivation:**
   - Historical tasks are backfilled metadata-only, with hierarchy `unknown`.
   - Live ingest upserts task rows.

@@ -97,6 +97,16 @@ Never persist raw response bodies or tool arguments. Never send absolute workspa
 
 A task is one Hermes turn (`(project_name, session_id, turn_id)`); Hermes' `task_id` is kept as `source_task_id` because it is session-scoped on the gateway. `task_ref = sha256(project \x1f session_id \x1f turn_id)[:32]`. Start complexity uses one rule for backfill and ingest (method `request-shape-v1` from the column or `tags.complexity_version`, earliest `(time, id)` wins). Completion is recomputed per project+session after every event, so arrival order does not matter. Hierarchy comes from `parent_session_id` + `parent_turn_id` (plugin `subagent_start`); `child` is never downgraded.
 
+### What the numbers mean (consumer contract)
+
+- **Coverage:** the only producer today is the Hermes plugin (runtime `hermes-agent`). Not measured: Claude Code on Windows, `claude -p` hand-off runs started by `hermes.sh` on hermes (a separate runtime the plugin does not see), and application provider calls. Totals are hermes-agent totals, not all LLM spend.
+- **Task totals** come from that task's own `llm_request` events only. A root task excludes its children, so summing tasks counts each call once. A task row and its calls must never be added together.
+- **Cost:** `cost_usd` sums priced calls only and is `null` when none is priced. `unpriced_count > 0` means the total is incomplete; it is never zero or free. `estimated_cost_usd` holds partial, estimated and legacy costs separately. For subscription providers the dollar value is a list-price estimate, not a bill or a quota.
+- **Wall time** is last event − first event of the task. It is not queue time and not end-to-end job time; a launcher measures those.
+- **Completion** (`next_task` / `session_end` / `inferred` / `open`) says the turn ended, not that it succeeded.
+- **Evaluator usage** (JEV) is stored under project `token-inspector` with `task_id` NULL. It is never a task and must be excluded from task totals.
+- **Tool names** in `request_tool_names_json` are the tools offered to the model, not the tools it ran.
+
 ## Idempotency and Concurrency
 
 - `client_event_id` is unique within `project_name` when non-null.

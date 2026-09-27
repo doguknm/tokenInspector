@@ -62,6 +62,18 @@ Tasks are derived at ingest from each Hermes turn. Task prompt capture and JEV s
 
 The systemd unit reads the key with `EnvironmentFile=%h/.config/token-inspector/secrets.env`. `GET /api/meta` shows both gates and a configuration preflight (`config_errors`) even while the flags are off.
 
+What each capability needs. Metadata-only use does not depend on prompt capture or JEV:
+
+| Capability | Needs | Auth |
+|---|---|---|
+| Task metadata: list, detail, tokens, cost, tools, wall time, completion, start complexity | Schema v10 (any plugin version; backfilled tasks have hierarchy `unknown`) | none (loopback / tailnet only) |
+| Hierarchy (`root`/`child`), request-composition counts | Plugin 0c (`subagent_start`, `pre_api_request` composition) | none |
+| Store one scrubbed prompt per task | `STORE_TASK_PROMPTS=1` + `INGEST_TOKEN` + valid purge interval, plugin `capture_task_prompt: true`, `/api/meta` probe ready, ADR-002 approved | producer sends `X-Ingest-Token` |
+| Read prompt text | Stored and not expired; `GET /api/tasks/{ref}?include_prompt=true` | `X-Ingest-Token` + allowed Origin |
+| Human labels, pilot CLI | Schema v10 | `X-Ingest-Token` |
+| JEV scoring | `JEV_ENABLED=1` + `AI_GATEWAY_API_KEY` + `INGEST_TOKEN` + valid budget, ADR-002 approved | `X-Ingest-Token` for `/evaluate` |
+| Purge / retention status | Schema v10 | `X-Ingest-Token` |
+
 Pilot CLI (over HTTP, token from `INGEST_TOKEN`; sample files and reports hold no prompt text):
 
 ```bash
