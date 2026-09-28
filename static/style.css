@@ -163,4 +163,20 @@ button:focus-visible, .tasks-day:focus-visible, select:focus-visible, .check inp
 .best { color: var(--green); font-size: 11px; margin-left: 6px; white-space: nowrap; }
 tr.low-sample td { color: var(--muted); }
 .cx-day:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* JOBS */
+#view-jobs .hidden { display: none; }
+.jobs-day {
+  padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--muted); cursor: pointer; font-size: 13px;
+}
+.jobs-day.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.jobs-day:hover:not(.active) { border-color: var(--accent); color: var(--text); }
+.jobs-day:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#jobs-page-info { color: var(--muted); font-size: 13px; }
+#jobs-anomalies { color: var(--yellow); }
+#table-jobs td { white-space: nowrap; }
+.job-ref { font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The cost cell is where incompleteness shows: the badge says it in words, colour only repeats it. */
+.cost-cell { white-space: nowrap; }
+.badge-warn { background: #451a03; color: var(--yellow); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

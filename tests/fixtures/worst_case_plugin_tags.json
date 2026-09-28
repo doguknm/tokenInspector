@@ -1,0 +1,26 @@
+{
+  "api_mode": "anthropic_messages",
+  "complexity_approx_input_units": 1000000000000,
+  "complexity_message_count": 1000000000000,
+  "complexity_points": 1000000000000,
+  "complexity_source": "deterministic_metadata",
+  "complexity_user_message_length": 1000000000000,
+  "complexity_version": "request-shape-v1",
+  "job_attempt": 9999,
+  "job_ref": "devir-20260928-101010-4294967295",
+  "message_count": 1000000000000,
+  "producer": "hermes-plugin",
+  "project_confidence": "fallback",
+  "project_source": "session_assignment",
+  "roles": {
+    "assistant": 1000000000000,
+    "developer": 1000000000000,
+    "function": 1000000000000,
+    "system": 1000000000000,
+    "tool": 1000000000000,
+    "user": 1000000000000
+  },
+  "runtime": "hermes-agent",
+  "schema": "hermes-token-inspector-v1",
+  "work_type": "aaaaaaaaaaaaaaaa"
+}

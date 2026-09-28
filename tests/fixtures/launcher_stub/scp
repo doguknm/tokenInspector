@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Test stub: `scp -q -o … -o … <file> <host>:<path>` copies the file to <path> locally.
+while [ $# -gt 2 ]; do case "$1" in -q) shift ;; -o) shift 2 ;; *) break ;; esac; done
+cp "$1" "${2#*:}"

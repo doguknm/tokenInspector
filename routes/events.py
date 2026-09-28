@@ -28,6 +28,40 @@ _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SECRET_TAG_RE = re.compile(r"(key|token|secret|password|auth|credential|bearer)", re.I)
 _TRUE = {"1", "true", "yes", "on"}
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-/]{1,128}$")
+# Tag byte cap: measured worst-case plugin tags (O9 J2, status.md Verification Log) before raising it.
+TAG_BYTES_MAX = 1024
+
+# Launcher job context in tags (O9 J1, docs: Plans/o9-job-correlation-cc-producer/backend.md).
+JOB_REF_RE = re.compile(r"^(devir-)?[0-9]{8}-[0-9]{6}-[0-9]{1,10}$")
+WORK_TYPES = ("brainstorm", "review", "code", "devir", "k1", "k2", "other")
+RUNTIMES = ("hermes-agent", "claude-code@windows", "claude-code@hermes", "app")
+PRODUCERS = ("hermes-plugin", "claude-code-hook", "app-provider")
+ATTRIBUTION_INVALID = "attribution_invalid"
+
+
+def _normalize_reserved(tags: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the reserved job keys; drops or maps values, never raises, never adds a key net."""
+    clean = dict(tags)
+    clean.pop(ATTRIBUTION_INVALID, None)  # backend-only mark: a producer can never pre-set it
+    removed_attribution = False
+    for key, allowed in (("runtime", RUNTIMES), ("producer", PRODUCERS)):
+        if key in clean and not (isinstance(clean[key], str) and clean[key] in allowed):
+            del clean[key]
+            removed_attribution = True
+    if "job_ref" in clean and not (isinstance(clean["job_ref"], str) and JOB_REF_RE.fullmatch(clean["job_ref"])):
+        del clean["job_ref"]
+    if "work_type" in clean:
+        value = clean["work_type"]
+        if value is None or value == "":
+            del clean["work_type"]
+        else:
+            normalized = value.strip().lower() if isinstance(value, str) else None
+            clean["work_type"] = normalized if normalized in WORK_TYPES else "other"
+    if "job_attempt" in clean and not (type(clean["job_attempt"]) is int and clean["job_attempt"] >= 1):
+        del clean["job_attempt"]
+    if removed_attribution:
+        clean[ATTRIBUTION_INVALID] = True  # stored, never counted, never inferred as legacy
+    return clean
 
 
 class EventIn(BaseModel):
@@ -88,6 +122,9 @@ class EventIn(BaseModel):
     task_hierarchy: Optional[Literal["root", "child", "unknown"]] = None
     parent_session_id: Optional[str] = Field(default=None, max_length=128)
     parent_turn_id: Optional[str] = Field(default=None, max_length=128)
+    # Project of the parent turn for a cross-project child (O9 J6). Never stored; an invalid value
+    # becomes None (today's behaviour), so it can never reject an event.
+    parent_project_name: Optional[Any] = None
     task_prompt_text: Optional[str] = Field(default=None, max_length=200_000)
     task_prompt_captured_at: Optional[str] = None
     # Compared by equality and never stored; any value is accepted so metadata is never rejected.
@@ -133,6 +170,13 @@ class EventIn(BaseModel):
             raise ValueError(f"{info.field_name} must include a timezone")
         return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
+    @field_validator("parent_project_name", mode="before")
+    @classmethod
+    def validate_parent_project_name(cls, value: Any) -> Optional[str]:
+        if isinstance(value, str) and _PROJECT_RE.fullmatch(value.strip().lower()):
+            return value.strip().lower()
+        return None
+
     @field_validator("request_tool_names")
     @classmethod
     def validate_tool_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
@@ -169,8 +213,8 @@ def _clean_tags(tags: dict[str, Any]) -> str | None:
         if isinstance(value, (str, int, float, bool)) or value is None:
             clean[key] = value if not isinstance(value, str) else value[:128]
     encoded = json.dumps(clean, separators=(",", ":"), sort_keys=True)
-    if len(encoded.encode("utf-8")) > 512:
-        raise ValueError("tags must encode to at most 512 bytes")
+    if len(encoded.encode("utf-8")) > TAG_BYTES_MAX:
+        raise ValueError(f"tags must encode to at most {TAG_BYTES_MAX} bytes")
     return encoded if clean else None
 
 
@@ -273,7 +317,7 @@ async def _prepare_event(body: EventIn, project_name: str, session: AsyncSession
         environment=body.environment,
         platform=body.platform,
         user_id_hash=body.user_id_hash,
-        tags_json=_clean_tags(body.tags),
+        tags_json=_clean_tags(_normalize_reserved(body.tags)),
         prompt_tokens=prompt_tokens,
         completion_tokens=body.completion_tokens,
         cache_read_tokens=body.cache_read_tokens,

@@ -11,6 +11,7 @@ from sqlalchemy import text
 import database
 import migrations
 import task_store
+from scripts import rollback_schema
 from database import AsyncSessionLocal
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -107,7 +108,7 @@ def _index_sql(path: Path) -> dict[str, str]:
 async def test_fresh_db_is_v10_with_all_tables_and_partial_indexes(tmp_path):
     path = tmp_path / "fresh.db"
     await database.init_db(str(path))
-    assert _version(path) == 10
+    assert _version(path) == migrations.LATEST_SCHEMA_VERSION
     assert set(NEW_TABLES) <= _tables(path)
     assert set(NEW_COLUMNS) <= {c[1] for c in _columns(path, "token_events")}
     indexes = _index_sql(path)
@@ -229,7 +230,7 @@ async def test_failure_after_create_all_rolls_back_everything(tmp_path, monkeypa
     _assert_v9_intact(path)  # create_all's new tables were rolled back too
     monkeypatch.undo()
     await database.init_db(str(path))
-    assert _version(path) == 10
+    assert _version(path) == migrations.LATEST_SCHEMA_VERSION
 
 
 async def test_failure_inside_m10_rolls_back_partial_ddl(tmp_path, monkeypatch):
@@ -248,7 +249,7 @@ async def test_failure_inside_m10_rolls_back_partial_ddl(tmp_path, monkeypatch):
     assert "tasks_probe" not in _tables(path)
     monkeypatch.undo()
     await database.init_db(str(path))
-    assert _version(path) == 10
+    assert _version(path) == migrations.LATEST_SCHEMA_VERSION
 
 
 # --- AC3e (rollback SQL) ---------------------------------------------------------------
@@ -260,6 +261,8 @@ async def test_rollback_sql_restores_v9_token_events_schema(tmp_path):
     pinned = _make_v9_db(tmp_path / "pinned.db")
     path = _make_v9_db(tmp_path / "prod.db", [_event("e1")])
     await database.init_db(str(path))
+    # v11+ is rolled back first through the O9 runner; rollback_v10.sql only ever runs on a v10 DB.
+    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 0
     rollback = (Path(__file__).parent.parent / "scripts" / "rollback_v10.sql").read_text(encoding="utf-8")
     with closing(sqlite3.connect(path)) as conn:
         conn.executescript(rollback)

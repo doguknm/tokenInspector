@@ -16,6 +16,7 @@
       <a href="#" data-view="models" class="nav-link">Models</a>
       <a href="#" data-view="complexity" class="nav-link">Complexity</a>
       <a href="#" data-view="tasks" class="nav-link">Tasks</a>
+      <a href="#" data-view="jobs" class="nav-link">Jobs</a>
       <a href="#" data-view="settings" class="nav-link">Settings</a>
     </div>
   </nav>
@@ -216,6 +217,38 @@
         <div id="task-detail-body"></div>
         <div id="task-probs-box" class="chart-box probs-box hidden"><canvas id="chart-task-probs"></canvas></div>
         <div id="task-detail-tables"></div>
+      </div>
+    </section>
+
+    <!-- JOBS -->
+    <section id="view-jobs" class="view hidden">
+      <div class="toolbar">
+        <h2>Jobs</h2>
+        <select id="jobs-runtime" aria-label="Runtime"><option value="">All runtimes</option></select>
+        <select id="jobs-work-type" aria-label="Work type"><option value="">All work types</option></select>
+        <div class="days-picker" role="group" aria-label="Time window">
+          <button class="jobs-day" id="jobs-days-7" data-days="7">7d</button>
+          <button class="jobs-day active" id="jobs-days-30" data-days="30">30d</button>
+          <button class="jobs-day" id="jobs-days-90" data-days="90">90d</button>
+        </div>
+      </div>
+      <p id="jobs-note" class="status-line">One row per launcher job. Costs sum priced calls only; a job with unpriced calls is incomplete, never zero. Times are first and last event, not job duration.</p>
+      <p id="jobs-anomalies" class="status-line warn hidden" role="status"></p>
+      <p id="jobs-error" class="muted hidden">Could not load jobs.</p>
+      <div class="toolbar">
+        <h3>Jobs in window</h3>
+        <div class="pagination">
+          <button id="jobs-prev" aria-label="Previous page">←</button>
+          <span id="jobs-page-info"></span>
+          <button id="jobs-next" aria-label="Next page">→</button>
+        </div>
+      </div>
+      <p id="jobs-empty" class="muted hidden">No jobs in this window. Jobs appear for runs started through hermes.sh (and Claude Code hand-off runs) after this release.</p>
+      <div class="table-wrap">
+        <table id="table-jobs">
+          <thead><tr><th>Job</th><th>Work type</th><th>Runtime</th><th>Projects</th><th class="num">Tasks</th><th class="num">Calls</th><th>Input</th><th>Cache read</th><th>Cache write</th><th>Output</th><th>Total (sum)</th><th class="num">Cost (USD)</th><th class="num">Est. cost</th><th>First</th><th>Last</th><th>Attempts</th><th class="num">Conflicts</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 

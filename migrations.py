@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 import task_store
 
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 Migration = Callable[[AsyncConnection], Awaitable[None]]
 
 
@@ -287,6 +287,39 @@ async def _m10(conn: AsyncConnection) -> None:
     await task_store.backfill_tasks(conn, models._now())
 
 
+# Same DDL strings SQLModel.create_all emits for Task.job_ref / Task.job_ref_conflicts, in declaration
+# order, so fresh and migrated schemas agree (PRAGMA table_info compares dflt_value literally).
+_M11_TASK_COLUMNS = {
+    "job_ref": "VARCHAR",
+    "job_ref_conflicts": "INTEGER DEFAULT '0' NOT NULL",
+}
+CC_DUPLICATES_MESSAGE = "duplicate cc- client_event_id rows across projects block migration 11"
+
+
+async def _m11(conn: AsyncConnection) -> None:
+    """Task -> job (first job wins, conflicts counted) and cross-project uniqueness of cc- ids."""
+    await _add_columns(conn, "tasks", _M11_TASK_COLUMNS)
+    await conn.execute(
+        text("CREATE INDEX IF NOT EXISTS ix_tasks_job_ref ON tasks (job_ref) WHERE job_ref IS NOT NULL")
+    )
+    duplicate = (
+        await conn.execute(
+            text(
+                "SELECT 1 FROM token_events WHERE substr(client_event_id, 1, 3) = 'cc-' "
+                "GROUP BY client_event_id HAVING COUNT(*) > 1 LIMIT 1"
+            )
+        )
+    ).first()
+    if duplicate is not None:
+        raise RuntimeError(CC_DUPLICATES_MESSAGE)  # fixed text: no id is echoed
+    await conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_token_events_cc_client_event "
+            "ON token_events (client_event_id) WHERE substr(client_event_id, 1, 3) = 'cc-'"
+        )
+    )
+
+
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _m1),
     (2, _m2),
@@ -298,6 +331,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (8, _m8),
     (9, _m9),
     (10, _m10),
+    (11, _m11),
 ]
 
 

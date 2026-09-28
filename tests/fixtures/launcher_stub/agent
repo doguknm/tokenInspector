@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Test stub for `hermes -z` / `claude -p`: records its first argument, argument count and the
+# TOKEN_INSPECTOR_* environment it received, nothing else.
+{
+  printf 'ARG1=%s\n' "$1"
+  printf 'ARGC=%s\n' "$#"
+  env | grep '^TOKEN_INSPECTOR_' | sort
+} > "$STUB_RECORD.tmp" && mv "$STUB_RECORD.tmp" "$STUB_RECORD"

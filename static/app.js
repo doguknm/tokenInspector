@@ -59,6 +59,7 @@ document.querySelectorAll('.nav-link').forEach(link => {
     if (view === 'models') loadModels();
     if (view === 'complexity') loadComplexity();
     if (view === 'tasks') loadTasks();
+    if (view === 'jobs') loadJobs();
     if (view === 'settings') loadSettings();
   });
 });
@@ -881,3 +882,125 @@ async function openTaskDetail(ref) {
   renderTaskDetail(d);
   document.getElementById('task-detail').classList.remove('hidden');
 }
+
+// ── Jobs ──────────────────────────────────────────────────────────────────────
+// Cost per launcher job (GET /api/jobs). Same semantics as the API: an unpriced call never shows as
+// zero or complete. Every API string goes through esc(). Only the latest request is rendered.
+const JOBS_PAGE_SIZE = 50;
+let jobsState = { days: 30, runtime: '', workType: '', page: 1, gen: 0, controller: null };
+
+function jobCostCell(r) {
+  if (r.cost_usd === null || r.cost_usd === undefined) {
+    return `— <span class="badge badge-muted" title="${esc(r.unpriced_count)} unpriced call(s); no priced call">unpriced</span>`;
+  }
+  if (r.unpriced_count > 0) {
+    return `≥ ${fmt.cost(r.cost_usd)} <span class="badge badge-warn" title="Incomplete: unpriced calls are not included">${esc(r.unpriced_count)} unpriced</span>`;
+  }
+  if (r.cost_complete === true) return fmt.cost(r.cost_usd);
+  return `${fmt.cost(r.cost_usd)} <span class="badge badge-muted" title="Includes partial or estimated calls">partial</span>`;
+}
+
+function jobWorkTypeCell(r) {
+  const types = r.work_types || [];
+  if (r.work_type) return esc(r.work_type);
+  if (types.length > 1) return `<span title="${esc(types.join(', '))}">mixed</span>`;
+  return '—';
+}
+
+function jobConflictCell(r) {
+  if (!(r.conflict_count > 0)) return fmt.num(r.conflict_count);
+  const title = `${r.conflict_count} conflicting call(s) in ${r.conflict_task_count} task(s)`;
+  return `${fmt.num(r.conflict_count)} <span class="badge badge-warn" title="${esc(title)}">conflict</span>`;
+}
+
+function jobRow(r) {
+  const attempts = (r.attempts || []).length ? r.attempts.map(esc).join(', ') : '—';
+  return `<tr>
+    <td class="job-ref">${esc(r.job_ref)}</td>
+    <td>${jobWorkTypeCell(r)}</td>
+    <td>${esc((r.runtimes || []).join(', '))}</td>
+    <td>${esc((r.projects || []).join(', '))}</td>
+    <td class="num">${fmt.num(r.task_count)}</td>
+    <td class="num">${fmt.num(r.llm_request_count)}</td>
+    ${tokenCells(r)}
+    <td class="num cost-cell">${jobCostCell(r)}</td>
+    <td class="num">${r.estimated_cost_usd ? fmt.cost(r.estimated_cost_usd) : '—'}</td>
+    <td>${esc(fmt.date(r.first_event_at))}</td>
+    <td>${esc(fmt.date(r.last_event_at))}</td>
+    <td>${attempts}</td>
+    <td class="num">${jobConflictCell(r)}</td>
+  </tr>`;
+}
+
+function renderJobs(data) {
+  const body = document.querySelector('#table-jobs tbody');
+  fillSelect('jobs-runtime', data.filters.runtimes, jobsState.runtime, 'All runtimes');
+  fillSelect('jobs-work-type', data.filters.work_types, jobsState.workType, 'All work types');
+  const a = data.anomalies || {};
+  const lines = [];
+  if (a.job_ref_conflicts > 0) {
+    lines.push(`${a.job_ref_conflict_tasks} task(s) received a different job id on ${a.job_ref_conflicts} call(s); the first job was kept.`);
+  }
+  if (a.invalid_attribution_events > 0) {
+    lines.push(`${a.invalid_attribution_events} call(s) had an invalid runtime/producer pair and are not counted.`);
+  }
+  const anomalies = document.getElementById('jobs-anomalies');
+  anomalies.textContent = lines.join(' ');
+  anomalies.classList.toggle('hidden', lines.length === 0);
+  const none = data.total === 0;
+  const pages = Math.max(1, Math.ceil(data.total / JOBS_PAGE_SIZE));
+  document.getElementById('jobs-empty').classList.toggle('hidden', !none);
+  body.parentElement.classList.toggle('hidden', none);
+  body.innerHTML = none ? '' : data.items.map(jobRow).join('');
+  document.getElementById('jobs-page-info').textContent = none ? 'No jobs' : `Page ${jobsState.page} of ${pages} (${data.total} jobs)`;
+  document.getElementById('jobs-prev').disabled = none || jobsState.page <= 1;
+  document.getElementById('jobs-next').disabled = none || jobsState.page >= pages;
+}
+
+function showJobsError() {
+  document.querySelector('#table-jobs tbody').innerHTML = '';
+  document.getElementById('jobs-page-info').textContent = '';
+  document.getElementById('jobs-prev').disabled = document.getElementById('jobs-next').disabled = true;
+  document.getElementById('jobs-empty').classList.add('hidden');
+  document.getElementById('jobs-error').classList.remove('hidden');  // fixed text; the server body is never shown
+}
+
+async function loadJobs() {
+  const gen = ++jobsState.gen;
+  if (jobsState.controller) jobsState.controller.abort();
+  const controller = new AbortController();
+  jobsState.controller = controller;
+  const params = new URLSearchParams({ days: jobsState.days, page: jobsState.page, page_size: JOBS_PAGE_SIZE });
+  if (jobsState.runtime) params.set('runtime', jobsState.runtime);
+  if (jobsState.workType) params.set('work_type', jobsState.workType);
+  let data;
+  try {
+    const response = await fetch(`/api/jobs?${params}`, { signal: controller.signal });
+    if (!response.ok) throw new Error('jobs request failed');
+    data = await response.json();
+  } catch (err) {
+    if (gen === jobsState.gen && !controller.signal.aborted) showJobsError();  // superseded: silent
+    return;
+  }
+  if (gen !== jobsState.gen) return;  // a newer request owns the table
+  document.getElementById('jobs-error').classList.add('hidden');
+  renderJobs(data);
+}
+
+function jobsFiltersChanged() {
+  jobsState.page = 1;
+  loadJobs();
+}
+
+document.querySelectorAll('.jobs-day').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.jobs-day').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    jobsState.days = parseInt(btn.dataset.days, 10);
+    jobsFiltersChanged();
+  });
+});
+document.getElementById('jobs-runtime').addEventListener('change', e => { jobsState.runtime = e.target.value; jobsFiltersChanged(); });
+document.getElementById('jobs-work-type').addEventListener('change', e => { jobsState.workType = e.target.value; jobsFiltersChanged(); });
+document.getElementById('jobs-prev').addEventListener('click', () => { if (jobsState.page > 1) { jobsState.page--; loadJobs(); } });
+document.getElementById('jobs-next').addEventListener('click', () => { jobsState.page++; loadJobs(); });

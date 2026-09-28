@@ -22,6 +22,13 @@ class TokenEvent(SQLModel, table=True):
             sqlite_where=text("client_event_id IS NOT NULL"),
         ),
         Index("ix_token_events_project_session_turn", "project_name", "session_id", "turn_id"),
+        # v11: Claude Code ids ("cc-" prefix) are unique across projects (ADR-004, O9 database.md).
+        Index(
+            "ux_token_events_cc_client_event",
+            "client_event_id",
+            unique=True,
+            sqlite_where=text("substr(client_event_id, 1, 3) = 'cc-'"),
+        ),
     )
     model_config = ConfigDict(protected_namespaces=())
 
@@ -106,6 +113,7 @@ class Task(SQLModel, table=True):
             "prompt_expires_at",
             sqlite_where=text("prompt_text IS NOT NULL"),
         ),
+        Index("ix_tasks_job_ref", "job_ref", sqlite_where=text("job_ref IS NOT NULL")),
     )
 
     id: str = Field(primary_key=True)  # task_ref
@@ -135,6 +143,9 @@ class Task(SQLModel, table=True):
     prompt_purged_at: Optional[str] = None
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
+    # v11: the one launcher job of this task (first valid job_ref wins) and later conflicting calls.
+    job_ref: Optional[str] = None
+    job_ref_conflicts: int = Field(default=0, sa_column_kwargs={"server_default": "0"})
 
 
 class EvaluatorRun(SQLModel, table=True):

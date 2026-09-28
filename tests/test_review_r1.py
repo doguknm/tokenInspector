@@ -100,7 +100,8 @@ async def test_schema_matches_independent_expectations(tmp_path):
             "hierarchy_status", "source", "first_seen_at", "last_seen_at", "completion", "completed_at",
             "start_complexity", "start_complexity_method", "start_complexity_event_at", "start_complexity_event_id",
             "prompt_text", "prompt_hash", "prompt_length", "prompt_truncated", "prompt_redaction_version",
-            "prompt_captured_at", "prompt_expires_at", "prompt_purged_at", "created_at", "updated_at"]
+            "prompt_captured_at", "prompt_expires_at", "prompt_purged_at", "created_at", "updated_at",
+            "job_ref", "job_ref_conflicts"]
         events = [r[1] for r in conn.execute("PRAGMA table_info(token_events)")]
         assert events[-7:] == ["complexity_method", "request_system_chars", "request_history_chars",
                                "request_tool_output_chars", "request_file_content_chars", "request_file_ref_count",

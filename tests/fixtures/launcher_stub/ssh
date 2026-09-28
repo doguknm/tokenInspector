@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Test stub (tests/test_launcher_env_contract.py): runs the "remote" command of hermes.sh locally.
+# The clone/fetch of `devir-hazirla` is skipped; everything else (runner write, sed, launch) runs.
+while [ $# -gt 1 ]; do case "$1" in -o) shift 2 ;; *) break ;; esac; done
+shift  # host
+cmd="$*"
+case "$cmd" in *"git clone"*) exit 0 ;; esac
+exec bash -c "$cmd"

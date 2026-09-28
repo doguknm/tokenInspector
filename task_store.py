@@ -210,8 +210,12 @@ async def _upsert_task(db, event, body, session_id: str, now: str) -> str:
     ref = task_ref(project, session_id, event.turn_id)
     ts = event.occurred_at or event.recorded_at
     parent_ref = root_ref = None
+    # Already validated by routes.events._normalize_reserved (O9 J1); first valid job wins (J4).
+    job_ref = _tags(event.tags_json).get("job_ref")
     if body.parent_session_id and body.parent_turn_id:
-        parent_ref = task_ref(project, body.parent_session_id, body.parent_turn_id)
+        # A cross-project child names its parent's project (validated, never stored; O9 J6).
+        parent_project = getattr(body, "parent_project_name", None) or project
+        parent_ref = task_ref(parent_project, body.parent_session_id, body.parent_turn_id)
         parent = (
             await db.execute(text("SELECT root_task_ref FROM tasks WHERE id = :id"), {"id": parent_ref})
         ).first()
@@ -226,8 +230,8 @@ async def _upsert_task(db, event, body, session_id: str, now: str) -> str:
         text(
             "INSERT INTO tasks (id, project_name, session_id, turn_id, source_task_id, parent_task_ref, "
             "root_task_ref, hierarchy_status, source, first_seen_at, last_seen_at, prompt_truncated, "
-            "created_at, updated_at) VALUES (:id, :p, :s, :t, :src, :parent, :root, :h, 'ingest', :ts, :ts, 0, "
-            ":now, :now) "
+            "created_at, updated_at, job_ref) VALUES (:id, :p, :s, :t, :src, :parent, :root, :h, 'ingest', :ts, :ts, "
+            "0, :now, :now, :job) "
             "ON CONFLICT(project_name, session_id, turn_id) DO UPDATE SET "
             "first_seen_at = MIN(tasks.first_seen_at, excluded.first_seen_at), "
             "last_seen_at = MAX(tasks.last_seen_at, excluded.last_seen_at), "
@@ -237,11 +241,16 @@ async def _upsert_task(db, event, body, session_id: str, now: str) -> str:
             # child is never downgraded
             "hierarchy_status = CASE WHEN tasks.hierarchy_status = 'child' OR excluded.hierarchy_status = 'child' "
             "THEN 'child' WHEN excluded.hierarchy_status = 'root' THEN 'root' ELSE tasks.hierarchy_status END, "
-            "updated_at = excluded.updated_at"
+            "updated_at = excluded.updated_at, "
+            # one job per task: the first valid job_ref wins; a later different one is counted, never applied
+            "job_ref = COALESCE(tasks.job_ref, excluded.job_ref), "
+            "job_ref_conflicts = tasks.job_ref_conflicts + CASE WHEN tasks.job_ref IS NOT NULL "
+            "AND excluded.job_ref IS NOT NULL AND excluded.job_ref <> tasks.job_ref THEN 1 ELSE 0 END"
         ),
         {
             "id": ref, "p": project, "s": session_id, "t": event.turn_id, "src": event.task_id or None,
             "parent": parent_ref, "root": root_ref, "h": hierarchy, "ts": ts, "now": now,
+            "job": job_ref if isinstance(job_ref, str) else None,
         },
     )
     if parent_ref:
@@ -249,9 +258,9 @@ async def _upsert_task(db, event, body, session_id: str, now: str) -> str:
         await db.execute(
             text(
                 "UPDATE tasks SET root_task_ref = (SELECT COALESCE(root_task_ref, parent_task_ref) FROM tasks WHERE id = :id), "
-                "updated_at = :now WHERE root_task_ref = :id AND project_name = :p"
+                "updated_at = :now WHERE root_task_ref = :id"
             ),
-            {"id": ref, "p": project, "now": now},
+            {"id": ref, "now": now},
         )
     chosen = start_complexity_candidate(event.event_type, event.complexity, event.complexity_method, event.tags_json)
     if chosen:
