@@ -1,7 +1,7 @@
 # Status — Per-project prompt/JEV allowlist with clone path-deny, and a safe producer example (O10)
 
 **Started**: 2026-09-27
-**Last updated**: 2026-09-28 (Hermes code review r1 done, all 12 findings fixed; O10 resolution pending the final review)
+**Last updated**: 2026-09-28 (final integration review passed; **O10 resolved**)
 **Plan base commits**: backend `3f52fe1`, plugin `f19ffd2` (both on `feat/task-telemetry-jev-pilot`)
 **Closes**: O10 in `Plans/task-telemetry-jev-pilot/status.md` (blocks that plan's Activation Gate). O10 is marked resolved only after the final review lane passes, including the AC13 semantic checklist; the maintenance-docs step only records "docs done, pending final review" (F17)
 
@@ -33,7 +33,7 @@ _Tool / model / skill per step come from the execution plan above. Claude steps 
 | maintenance-docs | Claude Code (Opus 5.5, direct) | done 2026-09-28 — README, AGENTS.md, CLAUDE.md (RP 9 four gates, new RP 13 WAL residual, RP 14 allowed-path test fixtures), CHANGELOG, ARCHITECTURE.md, ADR-002 §6, pilot status.md (Activation Gate (a) item + (c)-1, O9 hand-off rule, O10 "docs done, resolution pending final review"), plugin README; `tests/test_docs_allowlist.py` green. CONTRIBUTING.md and `.github/workflows/ci.yml`: no change needed (new tests run in the existing job) | backend.md "Documentation" (AC13). Must be done before the Hermes code review |
 | hermes plan review | Hermes (driven by Claude Code) | done — r1 17/17 fixed, r2 10/10 fixed; plan locked | Max 2 rounds reached; no round 3 |
 | hermes-review (code) | Hermes (driven by Claude Code) | done 2026-09-28 — r1 (single round by orchestrator decision): 12 findings, all fixed (backend `fcaa317`, plugin `65104cb`) | After tests-other and maintenance-docs, before review — spec in `## Hermes Code Review` |
-| review | Claude Code (Opus 5.5, direct) | not started | Run last — full integration review (AC → test map, cross-repo contracts, `ac13_semantic_checklist`, `runbook_review`); on pass, marks O10 resolved |
+| review | Claude Code (Opus 5.5, direct) | done 2026-09-28 — passed: no BLOCKER/HIGH; F1 MEDIUM fixed (plugin `4b069b4`); 2 UNSURE items → Known Limitations; O10 resolved | Run last — full integration review (AC → test map, cross-repo contracts, `ac13_semantic_checklist`, `runbook_review`); on pass, marks O10 resolved |
 
 ## Drift Log
 _Append here when any lane discovers the spec is wrong. Do not edit lane files mid-flight._
@@ -62,6 +62,9 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/prompt-al
 - plan r1: raw report `hermes/prompt-allowlist-safe-producer-plan-r1.md`; user decisions and fixes `hermes/plan-r1-triage.md` (all 17 fixed in the summary, backend.md and tests-other.md).
 - plan r2: raw report `hermes/prompt-allowlist-safe-producer-plan-r2.md`; user decisions `hermes/plan-r2-triage.md`. Design simplification: prompts only for proven root tasks, child sessions never carry one (resolves F1, F3, F4, F5, F7 at the root); F2, F6, F8, F9, F10 fixed directly; F6 clarified with the user (proven root allows `root_task_ref` NULL or equal to its own id). Where each lands: F1 → AC7/AC16, backend.md A2.7 + B3.7; F2 → AC17, B3.5–B3.6; F3/F4/F5/F7 → AC4/AC7 "resolved by root-only rule" notes; F6 → AC7/AC8, A2.2 + A3.1; F8 → AC8, A3.2; F9 → AC18, tests-other `## Mutation checks`; F10 → AC9, A1.1.
 - Plan locked after r2 — no round 3; verified by tests and mutation checks.
+- Final integration review (Claude, 2026-09-28): AC → test map, cross-repo contracts, `ac13_semantic_checklist` and `runbook_review` passed. No BLOCKER or HIGH.
+  - F1 MEDIUM `subagent_start` revoked every child, so the 2049th ordinary subagent without a gateway restart switched the sink to strip-every-prompt for good (fail-closed, but pilot data loss) — fixed `4b069b4`: only a child with root evidence or an attached prompt (`_prompt_sent`) is revoked; the first overflow logs one fixed warning (no names, no counts) and increments `revocation_overflows`; plugin README and CLAUDE.md RP 9 say to restart the gateway. Tests: 2049 prompt-less subagents leave root prompts flowing; a session that attached a prompt is revoked even without root evidence; warning once without names. Mutations IM1–IM3 caught.
+  - UNSURE items → Known Limitations (below).
 - code r1: raw reports `hermes/prompt-allowlist-safe-producer-code-r1-p1.md` (backend code + docs), `-p2.md` (backend tests), `-p3.md` (plugin). Orchestrator decision: Hermes' recommendations take priority, all 12 applied, **no round 2**; each fix verified by a test and, where it adds a control, by a mutation (Verification Log).
   - P1 F1 HIGH late-child JEV send window — fixed `fcaa317`: JEV scores only completed turns (`session_end`/`next_task`/inferred after 60 min), checked with the proven-root rule before every attempt (`task_not_completed`); ADR-002 §6 explains why completion closes the window and R7 no longer claims the root check alone prevents a send.
   - P1 F2 MEDIUM gate after retention check — fixed `fcaa317`: `project_gate` runs before the per-attempt retention checks; test with a real ingest child transition between attempts.
@@ -191,6 +194,9 @@ Rollback (either repo):
 ## Known Limitations
 _Review findings the user chose not to fix — one line each: `<plan|code>-review r<N> F<k>: <what> — <why accepted>`._
 
+- integration-review UNSURE 1: plugin `error_type` depends on what the Hermes hook passes (`llm_error` falls back to `APIError`; `tool_event` emits one only when the hook passes `error_type`), and whether Hermes passes exception class names was not verified — accepted: the identifier filter (`[A-Za-z0-9_.]{1,64}`, else `other`) bounds any value to an identifier, never free text; the identifier-shaped residual is R6.
+- integration-review UNSURE 2: a late child whose prompt was already stored under an earlier turn (different `turn_id`) is nulled only when an event of *that* turn carries the hierarchy fields; a later turn becomes `child` on its own row, so the earlier root row keeps its prompt — accepted: on hermes `subagent_start` fires while the child agent is built, before the child's first turn (Verification Log, B3.3), so a session cannot attach a root prompt before it is named a child; the plugin still strips every queued/spooled prompt of the revoked session, whatever its turn. Residual of R7 class; a fix would need a session-wide backend null (a later plan if hook order ever changes).
+
 ## Open Items
 | # | Item | Owner | Blocks |
 |---|---|---|---|
@@ -211,6 +217,7 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 | 2026-09-28 | maintenance-docs: local suites after the docs commit | backend **263 passed** (incl. `test_docs_allowlist.py` and browser 16); plugin **151 passed, 2 skipped**; py_compile / node --check / git diff --check clean |
 | 2026-09-28 | code-r1 fixes: local | backend **282 passed** (incl. browser 16); plugin **157 passed, 2 skipped**; py_compile / node --check / git diff --check clean |
 | 2026-09-28 | code-r1 fixes: hermes (temp worktrees @ `fcaa317` / `65104cb`, removed; prod checkouts stay on `main`) | backend **266 passed, 1 skipped** (browser module); plugin **159 passed** on Python 3.12.3 and on the Hermes runtime Python 3.11.15 |
+| 2026-09-28 | Integration review F1 (`4b069b4`) | plugin local **160 passed, 2 skipped**; hermes **162 passed** on Python 3.12.3 and 3.11.15; backend local **282 passed**. Mutations: IM1 unconditional revoke → `test_promptless_subagents_never_exhaust_the_revocation_set` red; IM2 attached prompt not counted → `test_session_that_attached_a_prompt_is_revoked_even_without_root_evidence` red; IM3 warning on every overflow → `test_revocation_overflow_warns_once_without_names_or_counts` red — **3/3 caught** |
 | 2026-09-28 | code-r1 fix mutations, one at a time, file restored after each | **15/15 caught** (RM6 first run was an equivalent mutation — fallback still reached through the cooldown branch — so RM6b disables both fallback paths) — table below |
 
 Code-r1 fix mutations:
