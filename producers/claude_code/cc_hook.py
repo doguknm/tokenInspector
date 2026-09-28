@@ -242,5 +242,4 @@ def main(stdin: Optional[BinaryIO] = None) -> int:
 
 
 if __name__ == "__main__":
-    main()
-    os._exit(0)
+    sys.exit(main())
