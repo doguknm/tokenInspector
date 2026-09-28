@@ -88,6 +88,7 @@ Hermes turn (plugin 0c: task_hierarchy, parent session/turn, composition counts,
 ```
 
 - Task prompts are stored only under ADR-002's gate and are scrubbed twice (plugin before the queue, backend before storage).
+- A fourth gate limits prompts and JEV to allowlisted projects and proven root tasks: the plugin checks its allowlist, the `-devir` path deny and root lineage before queue/spool; the backend checks `TASK_PROMPT_ALLOWED_PROJECTS`, the eligibility marker and the proven-root rule at ingest; the JEV worker re-checks before every provider attempt (ADR-002 §6).
 - The evaluator is a separate trust boundary: the scrubbed prompt leaves the machine; every call is reserved in `evaluator_attempts` first; its own usage is a `token-inspector` event that is never scored.
 - The plugin spools undeliverable batches to disk (fsync, dead-letter) and never holds a prompt past capture time + 30 days.
 

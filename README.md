@@ -50,7 +50,8 @@ Tasks are derived at ingest from each Hermes turn. Task prompt capture and JEV s
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `STORE_TASK_PROMPTS` | off | Store one scrubbed prompt per task (needs `INGEST_TOKEN` ≥ 16 chars and a valid purge interval) |
+| `STORE_TASK_PROMPTS` | off | Store one scrubbed prompt per task (needs `INGEST_TOKEN` ≥ 16 chars, a valid purge interval and a non-empty `TASK_PROMPT_ALLOWED_PROJECTS`) |
+| `TASK_PROMPT_ALLOWED_PROJECTS` | unset (= empty = off) | Comma-separated exact project names allowed for prompt storage **and** JEV. Entries are lower-cased; an entry that is not a valid project name (`^[a-z0-9][a-z0-9._-]{0,63}$`) is dropped with one startup warning `invalid allowlist entries ignored` |
 | `TASK_PROMPT_PURGE_INTERVAL_S` | `21600` | Purge loop target lag, 1..21600; `0` only after a verified all-copy purge |
 | `JEV_ENABLED` | off | JEV worker (needs `AI_GATEWAY_API_KEY`, `INGEST_TOKEN`, valid budget) |
 | `AI_GATEWAY_API_KEY` | — | From `~/.config/token-inspector/secrets.env`; never logged or returned |
@@ -60,7 +61,18 @@ Tasks are derived at ingest from each Hermes turn. Task prompt capture and JEV s
 | `TOKEN_INSPECTOR_ALLOWED_ORIGINS` | loopback origins | Extra origins for sensitive endpoints |
 | `REDACT_INTERNAL_HOST_SUFFIXES`, `REDACT_EXTRA_TERMS` | — | Extra redaction for internal domains and names |
 
-The systemd unit reads the key with `EnvironmentFile=%h/.config/token-inspector/secrets.env`. `GET /api/meta` shows both gates and a configuration preflight (`config_errors`) even while the flags are off.
+The systemd unit reads the key with `EnvironmentFile=%h/.config/token-inspector/secrets.env`. `GET /api/meta` shows both gates and a configuration preflight (`config_errors`) even while the flags are off. It also reports `task_prompt_allowlist` as `configured` or `empty`, never the names. With an empty list, `config_errors` holds `no_allowed_projects` for `capture` and `jev` (flags off: the reasons stay `not_enabled`); with a flag on, that feature's disabled reason becomes `no_allowed_projects` unless an earlier error (`ingest_token_missing`, `invalid_purge_interval`, `credentials_missing`, `invalid_budget_config`) comes first.
+
+### Per-project prompt allowlist (O10)
+
+A prompt is stored and scored only when **both** lists allow its project: the backend's `TASK_PROMPT_ALLOWED_PROJECTS` and the plugin's `task_prompt_allowed_projects`. Both are empty by default, so nothing is captured. Names match exactly after lower-casing; there are no globs or prefixes. The `hermes` fallback project may be listed, but then work done in general `hermes` chat (PEGA included) is captured too (accepted risk, ADR-002).
+
+- **Root tasks only.** A prompt is stored only for a proven root task (`hierarchy_status='root'`, no parent, `root_task_ref` NULL or its own id). Subagent (child) sessions never carry one. A task that later becomes a child loses its stored prompt (NULLed like a purge).
+- **Eligibility marker.** The backend stores a prompt only when the event carries `prompt_eligibility: "v1-allowed"`, which the current plugin sets on an authorized root prompt. An older plugin or a pre-upgrade spool file cannot deliver one.
+- **Path deny (plugin).** Sessions whose resolved workspace is under `~/Projects/*-devir` (hand-off clones) or a configured extra glob never send a prompt, even when the project name is listed.
+- **Not allowed = metadata only.** The event is still inserted and counted; only the prompt is dropped. A validation error never echoes the prompt.
+- **JEV.** Before every provider attempt the worker re-checks the list and the proven-root rule. A task that fails is recorded with `error_type='project_not_allowed'` (`skipped` before the first attempt, `error` after one). Removing a project and restarting blocks its stored tasks from JEV without purging them; they expire through the normal 30 days.
+- `GET /api/tasks?allowed_only=true` (with `X-Ingest-Token`) lists only tasks of listed projects; the pilot's `select` uses it.
 
 What each capability needs. Metadata-only use does not depend on prompt capture or JEV:
 
@@ -68,10 +80,10 @@ What each capability needs. Metadata-only use does not depend on prompt capture 
 |---|---|---|
 | Task metadata: list, detail, tokens, cost, tools, wall time, completion, start complexity | Schema v10 (any plugin version; backfilled tasks have hierarchy `unknown`) | none (loopback / tailnet only) |
 | Hierarchy (`root`/`child`), request-composition counts | Plugin 0c (`subagent_start`, `pre_api_request` composition) | none |
-| Store one scrubbed prompt per task | `STORE_TASK_PROMPTS=1` + `INGEST_TOKEN` + valid purge interval, plugin `capture_task_prompt: true`, `/api/meta` probe ready, ADR-002 approved | producer sends `X-Ingest-Token` |
+| Store one scrubbed prompt per task | `STORE_TASK_PROMPTS=1` + `INGEST_TOKEN` + valid purge interval, plugin `capture_task_prompt: true`, `/api/meta` probe ready, ADR-002 approved; project on backend `TASK_PROMPT_ALLOWED_PROJECTS` **and** plugin `task_prompt_allowed_projects`, workspace path not denied, root task only | producer sends `X-Ingest-Token` |
 | Read prompt text | Stored and not expired; `GET /api/tasks/{ref}?include_prompt=true` | `X-Ingest-Token` + allowed Origin |
 | Human labels, pilot CLI | Schema v10 | `X-Ingest-Token` |
-| JEV scoring | `JEV_ENABLED=1` + `AI_GATEWAY_API_KEY` + `INGEST_TOKEN` + valid budget, ADR-002 approved | `X-Ingest-Token` for `/evaluate` |
+| JEV scoring | `JEV_ENABLED=1` + `AI_GATEWAY_API_KEY` + `INGEST_TOKEN` + valid budget, ADR-002 approved; task is a proven root of a project on the backend allowlist | `X-Ingest-Token` for `/evaluate` |
 | Purge / retention status | Schema v10 | `X-Ingest-Token` |
 
 Pilot CLI (over HTTP, token from `INGEST_TOKEN`; sample files and reports hold no prompt text):
@@ -87,7 +99,12 @@ Rollback and purge: see the runbook in ADR-002 (`scripts/purge_task_prompts.py`,
 
 ## Connecting Hermes or any other project
 
-Use the helper below or adapt it into your Hermes plugin / provider wrapper.
+Use the helper below or adapt it into your Hermes plugin / provider wrapper. It is a thin wrapper over the bounded client in `token_inspector_client.py`, so the caller never waits for HTTP:
+
+- it posts only to `/api/events/batch` and sends `X-Ingest-Token` from `TOKEN_INSPECTOR_API_KEY` (the value of the backend's `INGEST_TOKEN`);
+- it gives every event a stable `client_event_id` (written back to the caller's object, so a resend is deduplicated);
+- it never sends `prompt_text`, `task_prompt_text` or `error_message` (send `error_type` and `http_status` instead);
+- it checks the HTTP status and the batch ack (`valid_ack`) and counts every event once: `delivered_events`, confirmed loss (`lost_events` = `dropped_events` queue full + `serialization_failed` + `rejected_events` + `http_failures` + `dropped_on_close`) and unconfirmed delivery (`unconfirmed_events` = `transport_unconfirmed` + `malformed_acks`; the server may have stored these).
 
 ```python
 import os
@@ -209,6 +226,9 @@ POST /api/events                          Ingest a token event
 POST /api/events/batch                    Ingest a batch of token events
 GET  /api/events?project=&model=&status=  Paginated event log
 
+GET  /api/meta                            Schema version, feature gates, config_errors, task_prompt_allowlist
+GET  /api/tasks?allowed_only=true         Tasks of allowlisted projects only (needs X-Ingest-Token)
+
 GET  /api/analytics/summary?days=7        Overall stats
 GET  /api/analytics/project-inventory     Bounded Git inventory with telemetry status
 GET  /api/analytics/by-project?days=30    Event-backed per-project breakdown
@@ -251,7 +271,7 @@ DELETE /api/settings/pricing/{model}      Remove a pricing rule
 | response_size_bytes | int? | Raw response payload size |
 | estimated_cost_usd | float? | Calculated at ingest from pricing table |
 | status | string | success / error / timeout |
-| error_message | string? | Set when status is error |
+| error_message | string? | Accepted from older producers; the Hermes plugin and the safe client no longer send it (they send `error_type` + `http_status`) |
 | complexity | int? | 1–5 tier; deterministic plugin metadata or legacy AI scorer |
 | prompt_text | str? | Truncated prompt for AI scoring (max 3000 chars) |
 | recorded_at | string | ISO8601 UTC timestamp |

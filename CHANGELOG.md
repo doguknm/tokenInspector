@@ -13,6 +13,16 @@ All notable user-visible and operational changes are documented here.
 - JEV difficulty worker via Vercel AI Gateway with durable per-call budget reservations, persisted provider cooldowns and exact Retry-After handling.
 - JEV pilot CLI (`jev_pilot.py`) with a paired-cohort report and pre-registered thresholds.
 - Request-composition counts on LLM events; `scripts/purge_task_prompts.py`, `scripts/seed_tasks_demo.py`, `scripts/rollback_v10.sql`.
+- Per-project prompt/JEV allowlist `TASK_PROMPT_ALLOWED_PROJECTS` (default empty = off): prompts are stored and scored only for proven root tasks of listed projects that carry the plugin's `prompt_eligibility` marker; a task that becomes a child loses its stored prompt. `/api/meta` reports `task_prompt_allowlist` (`configured`/`empty`) and `no_allowed_projects`.
+- JEV skips tasks of unlisted projects or non-root tasks with `project_not_allowed`, checked before every provider attempt; no automatic purge.
+- `GET /api/tasks?allowed_only=true` (token required); `jev_pilot.py select` uses it.
+- Plugin: `task_prompt_allowed_projects` and `task_prompt_deny_path_globs` (default `~/Projects/*-devir`); prompts only for root sessions, stripped from queue and spool when a session turns out to be a subagent.
+
+### Changed
+
+- `token_inspector_client.py` and the README `push_token_event` helper are a safe producer example: token, batch-only, status and ack checks, loss/unconfirmed counters, stable `client_event_id`, no prompt or error text.
+- The Hermes plugin no longer sends `error_message`; it sends an identifier-shaped `error_type` and `http_status`. The backend still accepts `error_message` from older producers.
+- Validation errors (single 422 and batch items) no longer echo the rejected input.
 
 ### Fixed
 

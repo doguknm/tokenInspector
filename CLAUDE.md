@@ -40,6 +40,7 @@ Production uses `DB_PATH` explicitly. Never assume the repository-local default 
 - Cache-read, cache-creation, reasoning, prompt, and completion tokens remain distinct.
 - Requested model, resolved model, and pricing model remain distinct.
 - Unknown pricing is `unpriced/no_rule`; never represent it as free.
+- Task prompts and JEV are limited to projects on both allowlists (backend `TASK_PROMPT_ALLOWED_PROJECTS`, plugin `task_prompt_allowed_projects`; empty = off) and to proven root tasks; `-devir` hand-off clones are path-denied in the plugin.
 - Deterministic complexity uses `request-shape-v1` numeric metadata, not raw prompt semantics.
 - Filesystem repository inventory and event-backed observed activity are different datasets.
 - Absolute workspace paths and complete Git remote URLs must not enter telemetry storage.
@@ -143,8 +144,8 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 
 9. **Task prompts never arrive although `STORE_TASK_PROMPTS=1`**
    - **Symptoms:** `tasks.prompt_text` stays NULL for new Hermes turns.
-   - **Root cause:** Capture is gated three times: backend flag + `INGEST_TOKEN` (≥ 16 chars) + valid purge interval; plugin `capture_task_prompt: true`; and the plugin's `/api/meta` probe (every 10 min) must see `schema_version ≥ 10` and `task_prompt_capture: true`.
-   - **Fix/check:** `curl -s http://127.0.0.1:8100/api/meta` (look at `task_prompt_capture_disabled_reason` and `config_errors`), check the plugin config, and wait one probe interval or restart the gateway.
+   - **Root cause:** Capture is gated four times: (1) backend flag + `INGEST_TOKEN` (≥ 16 chars) + valid purge interval + a non-empty allowlist `TASK_PROMPT_ALLOWED_PROJECTS` that names the project; (2) plugin `capture_task_prompt: true` + the project on plugin `task_prompt_allowed_projects` + a workspace that is not path-denied (`~/Projects/*-devir` or an extra `task_prompt_deny_path_globs` entry); (3) the plugin's `/api/meta` probe (every 10 min) must see `schema_version ≥ 10` and `task_prompt_capture: true`; (4) the turn must be a root task: the plugin saw the session's `on_session_start` in this process (a session that continued across a gateway restart is `unknown` and sends no prompt) and no `subagent_start` names it.
+   - **Fix/check:** `curl -s http://127.0.0.1:8100/api/meta` — `task_prompt_capture_disabled_reason == "no_allowed_projects"` or `task_prompt_allowlist == "empty"` means the backend allowlist is empty; also look at `config_errors`. Check the plugin config (both keys), the session's workspace path, and whether the session started after the last gateway restart; wait one probe interval or restart the gateway.
 
 10. **Test run or server hangs at exit after the lifespan ends**
    - **Symptoms:** A process that ran the app lifespan (e.g. a `DB_PATH=:memory:` subprocess test, or uvicorn on shutdown) finishes its work but never exits; a faulthandler dump shows only an `aiosqlite ... _connection_worker_thread` and `threading._shutdown`.
@@ -160,3 +161,13 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
    - **Symptoms:** `https://hermes.tail3a755d.ts.net` (or any other proxied name) answers `Invalid host header`, although `curl http://127.0.0.1:8100/api/meta` on hermes works.
    - **Root cause:** `TrustedHostMiddleware` (v10) only accepts `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`). `tailscale serve` forwards the tailnet name as the Host header.
    - **Fix/check:** Keep the `~/.config/systemd/user/token-inspector.service.d/remote-access.conf` drop-in (README → Run), then run `systemctl --user daemon-reload && systemctl --user restart token-inspector.service`. Check with `curl -s -o /dev/null -w "%{http_code}" https://hermes.tail3a755d.ts.net/api/meta` from a tailnet machine (expect 200).
+
+13. **A nulled or purged prompt is still found in the `-wal` bytes**
+   - **Symptoms:** A byte-level privacy test (or a manual `grep` of `<db>-wal`) still finds prompt text after a task became `child` and its prompt was NULLed, although `tasks.prompt_text` is NULL.
+   - **Root cause:** `secure_delete` clears the page in place, but SQLite's WAL keeps the earlier frame that held the text until the next checkpoint. The child-transition null does not checkpoint; the retention purge does.
+   - **Fix/check:** Run `PRAGMA wal_checkpoint(TRUNCATE)` (`retention.wal_checkpoint(db_path)`) before reading DB/WAL bytes; in production the retention loop or SQLite's auto-checkpoint removes it.
+
+14. **A prompt test stores or sends nothing after O10**
+   - **Symptoms:** A test that expects `tasks.prompt_text` (backend), a `task_prompt_text` on an emitted event (plugin) or a JEV provider call sees NULL, no prompt or `project_not_allowed`.
+   - **Root cause:** Default-off allowlists and the root-only rule: the project must be listed, the event must carry `task_hierarchy="root"` and `prompt_eligibility="v1-allowed"`, the plugin session needs `_on_session_start` and the Sink needs `prompt_authorized=True`, and JEV rows must be proven roots.
+   - **Fix/check:** Use the allowed-path fixtures (`_enable_capture` + `ROOT` in `tests/test_task_ingest.py`, the `jev` fixtures, plugin `_hooks(..., allowed=...)` + `_start`). Never relax the assertion instead.

@@ -1,7 +1,7 @@
 # Status — Per-project prompt/JEV allowlist with clone path-deny, and a safe producer example (O10)
 
 **Started**: 2026-09-27
-**Last updated**: 2026-09-28 (implementation in progress)
+**Last updated**: 2026-09-28 (implementation and maintenance-docs done; O10 docs done, resolution pending final review)
 **Plan base commits**: backend `3f52fe1`, plugin `f19ffd2` (both on `feat/task-telemetry-jev-pilot`)
 **Closes**: O10 in `Plans/task-telemetry-jev-pilot/status.md` (blocks that plan's Activation Gate). O10 is marked resolved only after the final review lane passes, including the AC13 semantic checklist; the maintenance-docs step only records "docs done, pending final review" (F17)
 
@@ -30,7 +30,7 @@ _Tool / model / skill per step come from the execution plan above. Claude steps 
 | frontend | out of scope | not applicable | No UI change |
 | tests-other | Claude Code (Opus 5.5, direct) | done 2026-09-28 — backend tests `964d801`, plugin tests `cdc3387`; mutations 50/50 caught (see Verification Log); `test_docs_allowlist.py` deferred to maintenance-docs (Drift Log) | Written with each backend step; mutation checks PM1–PM24, BM1–BM19, SM1–SM7 with exact sites and isolated fixtures (AC18). Plugin suite runs locally **and** on hermes (temp clone of the pushed branch) |
 | tests-e2e | out of scope | not applicable | |
-| maintenance-docs | Claude Code (Opus 5.5, direct) | not started | backend.md "Documentation" (AC13). Must be done before the Hermes code review |
+| maintenance-docs | Claude Code (Opus 5.5, direct) | done 2026-09-28 — README, AGENTS.md, CLAUDE.md (RP 9 four gates, new RP 13 WAL residual, RP 14 allowed-path test fixtures), CHANGELOG, ARCHITECTURE.md, ADR-002 §6, pilot status.md (Activation Gate (a) item + (c)-1, O9 hand-off rule, O10 "docs done, resolution pending final review"), plugin README; `tests/test_docs_allowlist.py` green. CONTRIBUTING.md and `.github/workflows/ci.yml`: no change needed (new tests run in the existing job) | backend.md "Documentation" (AC13). Must be done before the Hermes code review |
 | hermes plan review | Hermes (driven by Claude Code) | done — r1 17/17 fixed, r2 10/10 fixed; plan locked | Max 2 rounds reached; no round 3 |
 | hermes-review (code) | Hermes (driven by Claude Code) | not started | After tests-other and maintenance-docs, before review — spec in `## Hermes Code Review` |
 | review | Claude Code (Opus 5.5, direct) | not started | Run last — full integration review (AC → test map, cross-repo contracts, `ac13_semantic_checklist`, `runbook_review`); on pass, marks O10 resolved |
@@ -40,7 +40,7 @@ _Append here when any lane discovers the spec is wrong. Do not edit lane files m
 
 - 2026-09-27 — **Plan locked** after Hermes plan review r2 (root-only simplification applied to the summary, backend.md and tests-other.md). No drift recorded yet; from now on every spec change goes through this log, not through a lane-file edit.
 - 2026-09-28 — README: only the two A5 code blocks (`push_token_event`, "Batch ingest") changed in Part A (orchestrator-approved scope); every other README change stays in the maintenance-docs step.
-- 2026-09-28 — `tests/test_docs_allowlist.py` (AC13 literal check) is **not written yet**: it can only pass after the maintenance-docs step, so it moves to that step.
+- 2026-09-28 — `tests/test_docs_allowlist.py` (AC13 literal check) was written in the maintenance-docs step (it can only pass after it), not with the other tests. CHANGELOG uses the heading `## Unreleased` (no brackets); the test reads that section.
 - 2026-09-28 — BM9 (JEV entry gate, planned as *redundant*) was **caught**, not survived: the entry gate decides the reported reason (`project_not_allowed` before `already_scored`) and `test_pre_attempt_gate_is_skipped` isolates the loop gate by opening the first gate call. Recorded as caught.
 - 2026-09-28 — Child-transition null (A2.7): the nulled row is overwritten in place with `secure_delete`, but the earlier WAL frame that held the prompt stays until the next checkpoint (SQLite auto-checkpoint or the retention loop's TRUNCATE). `test_prompt_nulled_when_task_becomes_child` checkpoints before its DB/WAL byte assertion. Same class as the R7 local residual; flagged for the code review.
 - 2026-09-28 — F14 nuance: `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters, so they appear in the **aiosqlite DEBUG** driver log (off in production; the same driver logs every SQL parameter at DEBUG). Application logs never carry them; `test_allowlist_config_boundary` filters driver loggers. Flagged for the code review.
@@ -192,6 +192,7 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 | 2026-09-28 | Plugin on hermes (temp worktree @ `cdc3387`, removed after) | Python 3.12.3: **153 passed**; Hermes runtime Python 3.11.15: **153 passed** (symlink test runs there) |
 | 2026-09-28 | Existing tests touched (fixture only, no assertion relaxed) | Backend: `conftest.py` (pops `TASK_PROMPT_ALLOWED_PROJECTS`), `test_security_meta.py` (valid config lists `hermes`; preflight body gains the new key `task_prompt_allowlist: "configured"` — the only changed expectation; the flags-off error test sets the list so its exact set stays), `test_retention.py` (`_state` lists `hermes`), `test_task_ingest.py` + `test_review_r1.py` (capture on lists `hermes`, prompt events carry `task_hierarchy="root"` + marker; JEV rows are `root`), `test_jev_worker.py` (list `hermes`, rows `root`). Plugin: `test_capture_0c.py` (`_hooks` with allowlist/deny/cwd stub/registry reset, `_start`, `_child`; the 0c prompt test calls `_start`), `test_hooks_sink.py` + `test_response_mapping.py` (sink doubles accept `prompt_authorized`), `test_review_r1.py` + `test_spool.py` (listed project, marker / authorization) |
 | 2026-09-28 | Mutation checks (AC18), one at a time, file restored after each | **50/50 caught** — see table below |
+| 2026-09-28 | maintenance-docs: local suites after the docs commit | backend **263 passed** (incl. `test_docs_allowlist.py` and browser 16); plugin **151 passed, 2 skipped**; py_compile / node --check / git diff --check clean |
 
 Mutation results (backend and safe client local; plugin local **and** on hermes, where PM9's symlink test runs):
 

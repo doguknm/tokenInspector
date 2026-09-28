@@ -55,7 +55,36 @@ Categories replaced: PEM private keys; key shapes (`sk-`, `AKIA`, `gh*_`, `githu
 
 ### 5. Access guards
 
-`require_sensitive_auth` (token always required, Origin allowlist) guards `include_prompt`, labels, evaluate and purge. `TrustedHostMiddleware` rejects foreign `Host` headers (DNS rebinding). The backend stays on loopback.
+`require_sensitive_auth` (token always required, Origin allowlist) guards `include_prompt`, labels, evaluate, purge and `GET /api/tasks?allowed_only=true`. `TrustedHostMiddleware` rejects foreign `Host` headers (DNS rebinding). The backend stays on loopback.
+
+### 6. Per-project allowlist, path deny and root-only rule (O10, 2026-09-28)
+
+Plan: `Plans/prompt-allowlist-safe-producer/`. This section adds a fourth gate in front of sections 1 and 4.
+
+- **Two allowlists, both must allow.** Backend `TASK_PROMPT_ALLOWED_PROJECTS` (one list for prompt storage **and** JEV) and plugin `task_prompt_allowed_projects`. Default empty = off; an unknown or ambiguous project is off. Entries are exact names after `strip().lower()`; invalid entries are dropped (never passed through `normalize_project_name`, which falls back to `hermes`). Every attribution source counts, Git-derived slugs included, and the `hermes` fallback may be listed. There is no name-pattern denylist: default-off is the mechanism.
+- **Path deny (`task_prompt_deny_path_globs`).** Default `~/Projects/*-devir`; user globs add to it and never replace it. It wins over the allowlist and is matched on the root session's resolved workspace paths (agent cwd + process cwd, and every ancestor), with the glob's static prefix resolved so symlinks match. It never looks at the project name. An empty candidate set or any error means denied, and a denied session stays denied.
+- **Root-only rule.** Prompts are captured, stored and scored only for proven root tasks. The plugin attaches a prompt only when this process saw the session's `on_session_start`, no `subagent_start` names it, its project is listed and its own workspace is not denied; `Sink.emit` keeps the prompt only with that attach authorization and then stamps `prompt_eligibility: "v1-allowed"`. The backend stores a prompt only with that marker and only for a row with `hierarchy_status='root'`, `parent_task_ref IS NULL` and `root_task_ref` NULL or its own id. Child (subagent) sessions never carry a prompt; their metadata is unchanged.
+- **Late child classification.** When `subagent_start` names a session that already attached a prompt, the plugin strips that session's prompt fields from queued events, the batch being assembled and pending/dead-letter spool files (rewritten in place). The backend NULLs a stored prompt when its task becomes `child` (purge columns, `secure_delete`) and never re-stores it.
+- **JEV.** Before every provider attempt the worker re-reads the list and the proven-root rule; a hit is `project_not_allowed` (`skipped` before the first attempt, `error` after). Removing a project and restarting blocks its stored tasks from JEV; there is **no automatic purge**, they expire through the normal 30 days.
+- **D10.** PEGA projects, hand-off clones (`-devir`) and their subtasks stay off: PEGA names are simply never listed, clones are path-denied, subtasks are children.
+- **`claude -p` hand-off runtime rule.** Any future producer for the `claude -p` hand-off runtime (O9) must send **no prompt text for hand-off runs or their subtasks**, regardless of allowlists (D10); metadata only. Until O9 that runtime is not instrumented at all.
+- **No free-form error text.** The plugin no longer sends `error_message`; `error_type` is the class name if it matches `[A-Za-z0-9_.]{1,64}`, else `other`; session discriminators come from a fixed list (`end`, `shutdown`, `session_boundary`, `new_session`, else `other`).
+- **Privacy boundary.** Allowlist configuration (the list, its size, globs, paths, match results) never enters events, tags, application logs, `/api/meta` or error responses; logs carry neither names nor counts (`invalid allowlist entries ignored` is fixed text). Permitted: a project name in normal telemetry and the membership implied by the authenticated `allowed_only` results. `/api/meta` reports only `task_prompt_allowlist: configured|empty`.
+
+Risks:
+
+| # | Risk | Status |
+|---|---|---|
+| R1 | With `hermes` allowlisted, PEGA work done in general `hermes` chat (outside a repo) is captured and can be sent to JEV; D10 cannot be enforced there | **accepted by the user** |
+| R2 | The backend sees names, not paths, so it cannot tell a `-devir` clone from its original; clone denial rests on the plugin. PEGA-related names must stay off both lists | documented |
+| R3 | `HERMES_DEVIR_REPO` can move the clone outside `~/Projects/*-devir`; such a clone needs an extra glob | documented |
+| R4 | If `project_markers` is ever enabled, a typed marker can attribute a turn to a listed project; path deny still wins | documented |
+| R5 | Child (subagent) prompts are never stored or scored; accepted data loss (the pilot samples roots only) | accepted |
+| R6 | `error_type` is identifier-restricted, not categorised, so an identifier-shaped secret or name (e.g. `sk_live_abc123`) can still pass | documented, not fixed |
+| R7 | A session whose `on_session_start` this process did not see (e.g. after a gateway restart) is `unknown` and sends no prompt. Residual: a prompt that reached the local spool or DB before a late `subagent_start` (an in-flight batch, a crash before the worker's rewrite, or a WAL frame before the next checkpoint) exists locally until the rewrite, null or checkpoint runs; JEV never sends it | accepted |
+| R9 | A root whose cwd moves into a denied dir keeps the prompt already attached to its current turn; later turns get none | documented |
+
+Known defect (not fixed here): `parent_task_ref` of a cross-project child is built from the child's own project name, so it is wrong; under the root-only rule this affects hierarchy data only.
 
 ## Rollback runbook
 

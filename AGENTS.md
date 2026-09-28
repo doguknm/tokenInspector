@@ -53,12 +53,13 @@ Backend unavailability must never break the caller. Backend validation failures 
 | `project_inventory.py` | bounded direct-child Git discovery and privacy-safe canonical identity |
 | `routes/settings.py` | pricing CRUD, aliases, unpriced models, recost dry-run/apply |
 | `complexity_scorer.py` | legacy opt-in raw-prompt AI scoring only |
-| `features.py` | feature gates for task prompt capture and JEV, config preflight, Host/Origin allowlists |
+| `features.py` | feature gates for task prompt capture and JEV, config preflight, Host/Origin allowlists, the `TASK_PROMPT_ALLOWED_PROJECTS` prompt/JEV allowlist |
 | `auth.py` | `require_ingest_auth` and `require_sensitive_auth` (token always required, Origin check) |
-| `task_store.py` | task derivation shared by the v10 backfill and live ingest (task = Hermes turn) |
+| `task_store.py` | task derivation shared by the v10 backfill and live ingest (task = Hermes turn); prompt gate (`PROMPT_ELIGIBILITY`, `prompt_root_eligible`: allowlist + proven root, shared with JEV) and the child-transition prompt null |
 | `redaction.py` | `task-redact-v1` scrubber, byte-identical to the plugin's `task_redact.py` |
 | `retention.py` | purge of expired prompts/notes across DB, WAL and backups; scheduling; status |
-| `jev_scorer.py` | JEV worker: durable budget reservations, cooldowns, Retry-After, validation |
+| `jev_scorer.py` | JEV worker: durable budget reservations, cooldowns, Retry-After, validation; `project_gate` before every provider attempt |
+| `token_inspector_client.py` | safe producer example: bounded queue, batch-only, token, ack validation (`valid_ack`), loss/unconfirmed counters, stable `client_event_id`, no prompt or error text |
 | `routes/tasks.py` | Tasks API, labels, evaluate, evaluator status/runs, retention status, purge |
 | `routes/meta.py` | `/api/meta`: schema version, feature gates and config errors |
 | `jev_pilot.py`, `pilot_metrics.py` | pilot CLI over HTTP (select, blind label, score, report) and its statistics |
@@ -91,7 +92,16 @@ capture_tool_args=false
 
 Never persist raw response bodies or tool arguments. Never send absolute workspace paths, complete remotes, credentials, private network identifiers, or authenticated payloads.
 
-**Task prompt exception (ADR-002).** `STORE_TASK_PROMPTS` (separate from `STORE_RAW_PROMPTS`, which stays `0`) stores one `task-redact-v1`-scrubbed prompt per task in `tasks.prompt_text`, never in `token_events`. It needs `INGEST_TOKEN` (≥ 16 chars) and a valid purge interval, is never extended past producer capture time + 30 days, and is unreadable once expired even before the purge runs. Activation requires the ADR-002 Approval section.
+**Task prompt exception (ADR-002).** `STORE_TASK_PROMPTS` (separate from `STORE_RAW_PROMPTS`, which stays `0`) stores one `task-redact-v1`-scrubbed prompt per task in `tasks.prompt_text`, never in `token_events`. It needs `INGEST_TOKEN` (≥ 16 chars), a valid purge interval and a non-empty `TASK_PROMPT_ALLOWED_PROJECTS`, is never extended past producer capture time + 30 days, and is unreadable once expired even before the purge runs. Activation requires the ADR-002 Approval section.
+
+**Prompt allowlist and root-only rule (O10, ADR-002 §6).**
+
+- One backend list, `TASK_PROMPT_ALLOWED_PROJECTS`, governs prompt storage **and** JEV; the plugin has its own `task_prompt_allowed_projects`. Both must allow a project. Empty = off. Exact names after `strip().lower()`; an entry that does not match `^[a-z0-9][a-z0-9._-]{0,63}$` is dropped.
+- A prompt is stored only if capture is enabled, the event carries `prompt_eligibility == "v1-allowed"`, and the **upserted** task row is an allowlisted proven root: `hierarchy_status='root'`, `parent_task_ref IS NULL`, `root_task_ref IS NULL OR root_task_ref = id`. Otherwise the metadata event is still inserted and the prompt is dropped (outcomes `discarded_disabled`, `discarded_no_eligibility`, `discarded_not_eligible`).
+- After every task-turn upsert, a row that is `child` and still holds a prompt is NULLed through the purge columns (`prompt_text = NULL`, `prompt_purged_at` set). `prompt_captured_at` stays, so it is never re-stored. An allowlist change alone never purges.
+- JEV: `project_gate` runs after the `evaluator_task` skip and again before every provider attempt, reading the list at call time; a hit records `project_not_allowed` (`skipped` before the first attempt, `error` after).
+- `/api/meta` exposes only `task_prompt_allowlist: configured|empty`. The list, its size, globs and paths never enter events, application logs, `/api/meta` or error responses. Validation errors (single 422 and batch items) never echo input.
+- The plugin sends no `error_message`; the backend still accepts it from older producers.
 
 ## Tasks (schema v10)
 
@@ -210,7 +220,7 @@ GET /api/settings/unpriced-models
 POST /api/settings/recost
 
 GET  /api/meta
-GET  /api/tasks
+GET  /api/tasks                       (allowed_only=true needs require_sensitive_auth)
 GET  /api/tasks/{task_ref}            (include_prompt=true needs require_sensitive_auth)
 POST /api/tasks/{task_ref}/labels     (sensitive)
 POST /api/tasks/evaluate              (sensitive)
@@ -265,3 +275,8 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 - Retention globs `<db>.bak-v*` but skips `-wal`/`-shm`/`-journal` siblings, which are not databases.
 - The lifespan ends with `engine.dispose()`: aiosqlite worker threads are non-daemon, so an undisposed pooled connection blocks process exit.
 - Distro SQLite builds (hermes) default `secure_delete` ON; tests that need leftover freed-page bytes set it OFF explicitly.
+- Never normalize allowlist entries with the plugin's `normalize_project_name`: it falls back to `hermes` on garbage, so a typo would silently allowlist the `hermes` fallback. Both repos drop invalid entries instead.
+- **Known defect (Q1, not fixed):** `_upsert_task` builds `parent_task_ref` from the child event's **own** `project_name`, so a cross-project child gets a wrong `parent_task_ref`. Under the root-only rule no child stores a prompt anyway, so this affects hierarchy data only.
+- The child-transition null overwrites the row in place (`secure_delete`), but the WAL frame that held the prompt stays until the next checkpoint (auto-checkpoint or the retention loop's `wal_checkpoint(TRUNCATE)`). Byte-level tests checkpoint first.
+- `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters; they show up only in the aiosqlite DEBUG driver log (off in production), never in application logs.
+- Prompt tests after O10 must take the allowed path: list the project, send `task_hierarchy="root"` and `prompt_eligibility="v1-allowed"` (backend), or call `_on_session_start` and pass the attach authorization (plugin). JEV test rows must be `root`.
