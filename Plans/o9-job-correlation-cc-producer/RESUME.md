@@ -4,7 +4,8 @@ State:
 - PM round 2 (`--finalize`) done → `2026-09-28-summary.md` (incl. "Open questions resolved").
 - Planner done → `database.md`, `backend.md`, `frontend.md`, `tests-other.md`, `tests-e2e.md`, `status.md`.
 - Hermes plan review r1 done (2 parts, 41 findings; reports in `hermes/`). All 41 applied into the lane files (32 fixed, 9 merged into their Part A twin; none left unapplied) — table in status.md `## Hermes Reviews`. No round 2.
-- **Now:** user answers O13 (hook latency bound, default 5 s) → lock the plan → write PLAN_BASE (O11) and the Hermes Code Review spec (O12) into status.md → commit/push → Phase 1 in a subagent. S1 waits for O5 (owner of the AIFromScratch `hermes.sh`).
+- Plan LOCKED 2026-09-28 (`ffa5228`): PLAN_BASE `904dec2` (backend), plugin base `4b069b4`; Hermes Code Review spec in status.md. O5 resolved (TI owns the AIFromScratch `hermes.sh` and `commands/hermes.md`; ledger rows added), O13 resolved (hook bound 5 s). S1 also prints `job=<id>` (PossibleSkills request). The Windows settings file is `C:\Users\Doğukan Mutlu\.claude\settings.json`.
+- **Now:** Phase 1 in an Opus subagent, starting with the J0 / AC1.1 gate (stop and ask if it fails). Then the Phase 1 checkpoint: both suites green locally and on hermes, mutations in the Verification Log, commit/push in both repos.
 
 Decisions already made (do not ask again):
 - Every lane Claude Opus 5.5, direct (frontend with `frontend-design`; tests-e2e extends the Playwright suite). Hermes plan review 1 round; hermes code review 1 round; Claude integration review (Opus).
