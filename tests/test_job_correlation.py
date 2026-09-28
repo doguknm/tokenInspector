@@ -70,9 +70,11 @@ def test_reserved_keys_normalization_keeps_known_work_types(value):
     ({"job_attempt": 3}, {"job_attempt": 3}),
     ({"runtime": "hermes-agent", "producer": "hermes-plugin"}, {"runtime": "hermes-agent", "producer": "hermes-plugin"}),
     ({"runtime": "zz-canary-host.internal"}, {"attribution_invalid": True}),
-    ({"producer": "other-producer", "runtime": "hermes-agent"}, {"runtime": "hermes-agent", "attribution_invalid": True}),
+    # O9 C10 pairing: a runtime without its producer is dropped too (Phase 1 expectation updated)
+    ({"producer": "other-producer", "runtime": "hermes-agent"}, {"attribution_invalid": True}),
     ({"runtime": ["hermes-agent"]}, {"attribution_invalid": True}),
-    ({"attribution_invalid": True, "runtime": "app"}, {"runtime": "app"}),
+    ({"attribution_invalid": True, "runtime": "app", "producer": "app-provider"}, {"runtime": "app", "producer": "app-provider"}),
+    ({"attribution_invalid": True, "runtime": "app"}, {"attribution_invalid": True}),
     ({"attribution_invalid": False}, {}),
     ({"api_mode": "chat_completions", "schema": "x"}, {"api_mode": "chat_completions", "schema": "x"}),
 ])

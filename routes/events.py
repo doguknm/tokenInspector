@@ -37,6 +37,14 @@ WORK_TYPES = ("brainstorm", "review", "code", "devir", "k1", "k2", "other")
 RUNTIMES = ("hermes-agent", "claude-code@windows", "claude-code@hermes", "app")
 PRODUCERS = ("hermes-plugin", "claude-code-hook", "app-provider")
 ATTRIBUTION_INVALID = "attribution_invalid"
+# Dedup authority (O9 C10, docs/adr/004-cross-source-dedup-authority.md): one counting producer per runtime.
+RUNTIME_PRODUCER = {
+    "hermes-agent": "hermes-plugin",
+    "claude-code@windows": "claude-code-hook",
+    "claude-code@hermes": "claude-code-hook",
+    "app": "app-provider",
+}
+CC_ID_PREFIX = "cc-"  # reserved for the Claude Code producer; unique across projects (v11 index)
 
 
 def _normalize_reserved(tags: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +56,12 @@ def _normalize_reserved(tags: dict[str, Any]) -> dict[str, Any]:
         if key in clean and not (isinstance(clean[key], str) and clean[key] in allowed):
             del clean[key]
             removed_attribution = True
+    runtime, producer = clean.get("runtime"), clean.get("producer")
+    if (runtime is not None or producer is not None) and RUNTIME_PRODUCER.get(runtime) != producer:
+        # invalid runtime<->producer pair (incl. a missing half): both dropped, event marked
+        clean.pop("runtime", None)
+        clean.pop("producer", None)
+        removed_attribution = True
     if "job_ref" in clean and not (isinstance(clean["job_ref"], str) and JOB_REF_RE.fullmatch(clean["job_ref"])):
         del clean["job_ref"]
     if "work_type" in clean:
@@ -362,7 +376,12 @@ async def _insert_event(
 ) -> tuple[TokenEvent, bool]:
     values = event.model_dump()
     statement = sqlite_insert(TokenEvent).values(**values)
-    if event.client_event_id:
+    cross_project = bool(event.client_event_id) and event.client_event_id.startswith(CC_ID_PREFIX)
+    if cross_project:
+        # A conflict on either unique index (per project, or ux_token_events_cc_client_event) is a
+        # duplicate: a resumed Claude Code copy resolved to another project counts once (O9 C10).
+        statement = statement.on_conflict_do_nothing()
+    elif event.client_event_id:
         statement = statement.on_conflict_do_nothing(
             index_elements=["project_name", "client_event_id"],
             index_where=TokenEvent.client_event_id.is_not(None),
@@ -371,14 +390,10 @@ async def _insert_event(
 
     if not event.client_event_id:
         return event, False
-    stored = (
-        await session.exec(
-            select(TokenEvent).where(
-                TokenEvent.project_name == event.project_name,
-                TokenEvent.client_event_id == event.client_event_id,
-            )
-        )
-    ).first()
+    lookup = select(TokenEvent).where(TokenEvent.client_event_id == event.client_event_id)
+    if not cross_project:
+        lookup = lookup.where(TokenEvent.project_name == event.project_name)
+    stored = (await session.exec(lookup)).first()
     if stored is None:
         raise RuntimeError("idempotent insert completed without a stored row")
     return stored, stored.id != event.id

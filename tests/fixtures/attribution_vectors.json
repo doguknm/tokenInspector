@@ -1,0 +1,24 @@
+{
+  "_comment": "O9 C4 attribution parity: byte-identical in tokenInspector and token_inspector tests/fixtures. Each repo runs its own implementation (backend producers/claude_code/cc_attribution.py, plugin project.py). Only inputs that normalize to a valid name are listed: for an input that normalizes to nothing the plugin falls back to 'hermes' while the Claude Code producer continues with the next source.",
+  "remote_urls": [
+    {"url": "https://github.com/doguknm/tokenInspector.git", "expected": "tokeninspector"},
+    {"url": "git@github.com:Org/PEGADocRag.git", "expected": "pegadocrag"},
+    {"url": "https://zz-user:zz-CANARYPASS@github.com/Org/Repo-Name.git", "expected": "repo-name"},
+    {"url": "https://github.com/Org/Repo/", "expected": "repo"},
+    {"url": "ssh://git@example.org:2222/Org/My.Repo.git", "expected": "my.repo"},
+    {"url": "git@example.org:Repo.git", "expected": "repo"},
+    {"url": "https://dev.example.org/Org/Project/_git/Some Repo", "expected": "some-repo"},
+    {"url": "file:///srv/git/Under_Score.git", "expected": "under_score"},
+    {"url": "https://example.org/a/b/c.git/", "expected": "c"},
+    {"url": "https://example.org/Org/UPPER_case-Name.git", "expected": "upper_case-name"}
+  ],
+  "directory_names": [
+    {"name": "PEGADocRagAgent-devir", "expected": "pegadocragagent-devir"},
+    {"name": "My Project", "expected": "my-project"},
+    {"name": "token_inspector", "expected": "token_inspector"},
+    {"name": "Repo.Name", "expected": "repo.name"},
+    {"name": "--weird--", "expected": "weird"},
+    {"name": "Ünïcode", "expected": "n-code"},
+    {"name": "tokenInspector", "expected": "tokeninspector"}
+  ]
+}
