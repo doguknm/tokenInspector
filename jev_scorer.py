@@ -294,11 +294,30 @@ async def _complete(session, attempt: dict, *, status: str, http_status: Optiona
     await session.commit()
 
 
+# A turn is scored only once it has ended (as the pilot's select requires): a subagent_start always precedes
+# the child's first turn, so by then a late child classification has reached the task row (code-r1 P1 F1).
+COMPLETED = ("session_end", "next_task")
+INFERRED_AFTER = timedelta(minutes=60)
+
+
 async def project_gate(session, ref: str) -> Optional[str]:
-    """`project_not_allowed` unless the task is an allowlisted proven root; reads the list at call time."""
-    if await task_store.prompt_root_eligible(session, ref, features.current().allowed_projects):
+    """None only for a completed, allowlisted proven root; reads the list and the row at call time.
+
+    `project_not_allowed`: unlisted project or not a proven root. `task_not_completed`: the turn has not ended
+    (completion session_end/next_task, or inferred after 60 idle minutes)."""
+    if not await task_store.prompt_root_eligible(session, ref, features.current().allowed_projects):
+        return "project_not_allowed"
+    row = (
+        await session.execute(text("SELECT completion, last_seen_at FROM tasks WHERE id = :id"), {"id": ref})
+    ).first()
+    if row is None:
+        return "project_not_allowed"
+    completion, last_seen = row
+    if completion in COMPLETED:
         return None
-    return "project_not_allowed"
+    if not completion and last_seen and _parse(last_seen) < now() - INFERRED_AFTER:
+        return None  # inferred completion
+    return "task_not_completed"
 
 
 async def evaluate_task(session, run_id: str, ref: str, config: features.Budget, api_key: str) -> TaskOutcome:
@@ -313,8 +332,9 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
     if row[0] == EVALUATOR_PROJECT:
         return TaskOutcome("skipped", error_type="evaluator_task")
     # Redundant with the per-attempt gate below; gives the reason ahead of no_prompt/already_scored.
-    if await project_gate(session, ref):
-        return TaskOutcome("skipped", error_type="project_not_allowed")
+    gate = await project_gate(session, ref)
+    if gate:
+        return TaskOutcome("skipped", error_type=gate)
     if row[3] is not None:
         return TaskOutcome("skipped", error_type="prompt_purged")
     if row[1] is None:
@@ -351,6 +371,13 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
                 provider = PROVIDERS[1]
                 continue
             return outcome
+        # Before every attempt (first try, retry and fallback) and before the retention checks, so a task that
+        # became a child (and had its prompt nulled) reports project_not_allowed, not prompt_purged (P1 F2).
+        gate = await project_gate(session, ref)
+        if gate:
+            outcome.error_type = gate
+            outcome.status = "skipped" if not outcome.attempts else "error"
+            return outcome
         fresh = (
             await session.execute(
                 text("SELECT prompt_text, prompt_expires_at, prompt_purged_at FROM tasks WHERE id = :id"), {"id": ref}
@@ -360,10 +387,6 @@ async def evaluate_task(session, run_id: str, ref: str, config: features.Budget,
             outcome.error_type = "prompt_expired" if fresh is not None and fresh[2] is None else "prompt_purged"
             outcome.status = "skipped" if not outcome.attempts else "error"
             return outcome  # retention ended during a wait: the text is never sent
-        if await project_gate(session, ref):  # before every attempt: first try, retry and fallback
-            outcome.error_type = "project_not_allowed"
-            outcome.status = "skipped" if not outcome.attempts else "error"
-            return outcome
         state = fresh[0]
         body = request_body(state, provider)
         totals = await spend(session, now())

@@ -155,7 +155,9 @@ class TokenInspectorClient:
                 payload = dict(event)
             for key in SENSITIVE_FIELDS:
                 payload.pop(key, None)
-            json.dumps(payload)  # a payload that cannot be serialized never poisons a batch
+            # Wire-equivalent to httpx's JSON body (no NaN/Infinity, UTF-8): an event the transport would refuse
+            # is counted here and never poisons its batch (code-r1 P1 F3).
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         except Exception:
             self.serialization_failed += 1
             return False

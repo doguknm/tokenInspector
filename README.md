@@ -71,7 +71,7 @@ A prompt is stored and scored only when **both** lists allow its project: the ba
 - **Eligibility marker.** The backend stores a prompt only when the event carries `prompt_eligibility: "v1-allowed"`, which the current plugin sets on an authorized root prompt. An older plugin or a pre-upgrade spool file cannot deliver one.
 - **Path deny (plugin).** Sessions whose resolved workspace is under `~/Projects/*-devir` (hand-off clones) or a configured extra glob never send a prompt, even when the project name is listed.
 - **Not allowed = metadata only.** The event is still inserted and counted; only the prompt is dropped. A validation error never echoes the prompt.
-- **JEV.** Before every provider attempt the worker re-checks the list and the proven-root rule. A task that fails is recorded with `error_type='project_not_allowed'` (`skipped` before the first attempt, `error` after one). Removing a project and restarting blocks its stored tasks from JEV without purging them; they expire through the normal 30 days.
+- **JEV.** Only completed turns are scored (completion `session_end`/`next_task`, or 60 idle minutes), like the pilot's `select`. Before every provider attempt the worker re-checks the list, the proven-root rule and completion. A task that fails is recorded with `error_type='project_not_allowed'` (unlisted or not a root) or `task_not_completed` (`skipped` before the first attempt, `error` after one); `/evaluate` reports the same reasons. Removing a project and restarting blocks its stored tasks from JEV without purging them; they expire through the normal 30 days.
 - `GET /api/tasks?allowed_only=true` (with `X-Ingest-Token`) lists only tasks of listed projects; the pilot's `select` uses it.
 
 What each capability needs. Metadata-only use does not depend on prompt capture or JEV:
@@ -103,6 +103,7 @@ Use the helper below or adapt it into your Hermes plugin / provider wrapper. It 
 
 - it posts only to `/api/events/batch` and sends `X-Ingest-Token` from `TOKEN_INSPECTOR_API_KEY` (the value of the backend's `INGEST_TOKEN`);
 - it gives every event a stable `client_event_id` (written back to the caller's object, so a resend is deduplicated);
+- it checks each event at enqueue with the same JSON encoding the transport uses (no NaN/Infinity, valid UTF-8); an event that fails is counted in `serialization_failed` and never blocks the rest of its batch;
 - it never sends `prompt_text`, `task_prompt_text` or `error_message` (send `error_type` and `http_status` instead);
 - it checks the HTTP status and the batch ack (`valid_ack`) and counts every event once: `delivered_events`, confirmed loss (`lost_events` = `dropped_events` queue full + `serialization_failed` + `rejected_events` + `http_failures` + `dropped_on_close`) and unconfirmed delivery (`unconfirmed_events` = `transport_unconfirmed` + `malformed_acks`; the server may have stored these).
 
@@ -191,16 +192,42 @@ async def close_token_inspector(timeout: float = 2.0) -> None:
 
 ### Batch ingest
 
-If you already buffer events in memory, send them in one POST. Give every event a stable
-`client_event_id`, send no prompt or error text, and check the ack:
+If you already buffer events in memory, the bounded client above is the simplest way to send them. To POST a batch yourself, give every event a stable `client_event_id`, send no prompt or error text, and account for every event:
 
 ```python
-response = await client.post(
-    "http://127.0.0.1:8100/api/events/batch",
-    headers={"X-Project-Name": "hermes", "X-Ingest-Token": os.environ["TOKEN_INSPECTOR_API_KEY"]},
-    json={"events": [event1, event2, event3]},
-)
-ok = response.is_success and valid_ack(response.json(), 3)  # else count the 3 events as lost/unconfirmed
+import os
+
+import httpx
+
+from token_inspector_client import valid_ack
+
+
+async def post_batch(client: httpx.AsyncClient, events: list[dict]) -> dict:
+    """One direct batch POST; every event ends as delivered, lost or unconfirmed."""
+    n = len(events)
+    result = {"delivered": 0, "lost": 0, "unconfirmed": 0}
+    try:
+        response = await client.post(
+            "http://127.0.0.1:8100/api/events/batch",
+            headers={"X-Project-Name": "hermes", "X-Ingest-Token": os.environ["TOKEN_INSPECTOR_API_KEY"]},
+            json={"events": events},
+        )
+    except httpx.HTTPError:
+        result["unconfirmed"] = n  # transport failure: the server may have stored them
+        return result
+    if not response.is_success:
+        result["lost"] = n  # non-2xx: nothing was stored
+        return result
+    try:
+        ack = response.json()
+    except ValueError:
+        ack = None
+    if not valid_ack(ack, n):
+        result["unconfirmed"] = n  # 2xx with a malformed ack: stored or not is unknown
+        return result
+    result["delivered"] = ack["inserted"] + ack["duplicates"]
+    result["lost"] = ack["rejected"]  # a rejected event is lost, never delivered
+    return result
 ```
 
 The batch endpoint deduplicates by `client_event_id` when present.

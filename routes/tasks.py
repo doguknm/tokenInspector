@@ -280,7 +280,7 @@ async def _skip_reason(session: AsyncSession, ref: str, now: str) -> Optional[st
         return "not_found"
     if row["project_name"] == jev_scorer.EVALUATOR_PROJECT:
         return "evaluator_task"
-    reason = await jev_scorer.project_gate(session, ref)
+    reason = await jev_scorer.project_gate(session, ref)  # project_not_allowed or task_not_completed
     if reason:
         return reason
     state = prompt_state(dict(row), now)

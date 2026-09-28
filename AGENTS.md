@@ -58,7 +58,7 @@ Backend unavailability must never break the caller. Backend validation failures 
 | `task_store.py` | task derivation shared by the v10 backfill and live ingest (task = Hermes turn); prompt gate (`PROMPT_ELIGIBILITY`, `prompt_root_eligible`: allowlist + proven root, shared with JEV) and the child-transition prompt null |
 | `redaction.py` | `task-redact-v1` scrubber, byte-identical to the plugin's `task_redact.py` |
 | `retention.py` | purge of expired prompts/notes across DB, WAL and backups; scheduling; status |
-| `jev_scorer.py` | JEV worker: durable budget reservations, cooldowns, Retry-After, validation; `project_gate` before every provider attempt |
+| `jev_scorer.py` | JEV worker: durable budget reservations, cooldowns, Retry-After, validation; `project_gate` (allowlist + proven root + completed turn) before every provider attempt |
 | `token_inspector_client.py` | safe producer example: bounded queue, batch-only, token, ack validation (`valid_ack`), loss/unconfirmed counters, stable `client_event_id`, no prompt or error text |
 | `routes/tasks.py` | Tasks API, labels, evaluate, evaluator status/runs, retention status, purge |
 | `routes/meta.py` | `/api/meta`: schema version, feature gates and config errors |
@@ -99,7 +99,7 @@ Never persist raw response bodies or tool arguments. Never send absolute workspa
 - One backend list, `TASK_PROMPT_ALLOWED_PROJECTS`, governs prompt storage **and** JEV; the plugin has its own `task_prompt_allowed_projects`. Both must allow a project. Empty = off. Exact names after `strip().lower()`; an entry that does not match `^[a-z0-9][a-z0-9._-]{0,63}$` is dropped.
 - A prompt is stored only if capture is enabled, the event carries `prompt_eligibility == "v1-allowed"`, and the **upserted** task row is an allowlisted proven root: `hierarchy_status='root'`, `parent_task_ref IS NULL`, `root_task_ref IS NULL OR root_task_ref = id`. Otherwise the metadata event is still inserted and the prompt is dropped (outcomes `discarded_disabled`, `discarded_no_eligibility`, `discarded_not_eligible`).
 - After every task-turn upsert, a row that is `child` and still holds a prompt is NULLed through the purge columns (`prompt_text = NULL`, `prompt_purged_at` set). `prompt_captured_at` stays, so it is never re-stored. An allowlist change alone never purges.
-- JEV: `project_gate` runs after the `evaluator_task` skip and again before every provider attempt, reading the list at call time; a hit records `project_not_allowed` (`skipped` before the first attempt, `error` after).
+- JEV: `project_gate` runs after the `evaluator_task` skip and again before every provider attempt (ahead of the retention checks), reading the list and the row at call time. An unlisted or non-root task records `project_not_allowed`; a turn that has not ended (`completion` not `session_end`/`next_task` and last seen less than 60 min ago) records `task_not_completed` (`skipped` before the first attempt, `error` after). Requiring a completed turn is what keeps a late child classification from racing a provider send (ADR-002 §6).
 - `/api/meta` exposes only `task_prompt_allowlist: configured|empty`. The list, its size, globs and paths never enter events, application logs, `/api/meta` or error responses. Validation errors (single 422 and batch items) never echo input.
 - The plugin sends no `error_message`; the backend still accepts it from older producers.
 

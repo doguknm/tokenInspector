@@ -1,6 +1,7 @@
 """O10 safe producer example: token_inspector_client.py and the README push_token_event helper (AC11, AC12)."""
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import re
@@ -111,6 +112,20 @@ async def test_loss_counters_sum_to_every_lost_event():
     assert (mixed.delivered_events, mixed.rejected_events) == (2, 1)
 
 
+async def test_wire_invalid_events_never_poison_a_batch():
+    """code-r1 P1 F3: validation matches httpx's JSON body (allow_nan=False, UTF-8)."""
+    seen = []
+    client = _client(_ok_handler(seen))
+    lone_surrogate = chr(0xD800)
+    events = [{"model": "ok1"}, {"model": "m", "prompt_tokens": float("nan")}, {"model": "m" + lone_surrogate},
+              {"model": "m", "tags": {"x": float("inf")}}, {"model": "ok2"}]
+    results = [await client.post_event(e) for e in events]
+    await client.close()
+    assert results == [True, False, False, False, True]
+    assert (client.serialization_failed, client.delivered_events, client.transport_unconfirmed) == (3, 2, 0)
+    assert [e["model"] for r in seen for e in _body(r)["events"]] == ["ok1", "ok2"]
+
+
 async def test_close_cancels_and_counts():
     started, release = asyncio.Event(), asyncio.Event()
 
@@ -203,9 +218,21 @@ async def test_queue_stays_bounded():
 
 
 async def test_sensitive_fields_refused_or_stripped():
-    for field in ("prompt_text", "error_message"):
+    for field in ("prompt_text", "task_prompt_text", "error_message"):
         with pytest.raises(TypeError):
             TokenInspectorEvent(model="m", **{field: "x"})
+
+    @dataclasses.dataclass
+    class WithPrompt(TokenInspectorEvent):  # a subclass that adds the fields back is still stripped
+        task_prompt_text: str | None = None
+        error_message: str | None = None
+
+    subclass_seen = []
+    subclass_client = _client(_ok_handler(subclass_seen))
+    await subclass_client.post_event(WithPrompt(model="m", task_prompt_text="tp", error_message="em"))
+    await subclass_client.close()
+    (sent_sub,) = _body(subclass_seen[0])["events"]
+    assert "task_prompt_text" not in sent_sub and "error_message" not in sent_sub
     seen = []
     client = _client(_ok_handler(seen))
     await client.post_event({"model": "m", "prompt_text": "p", "task_prompt_text": "tp", "error_message": "em",
@@ -270,3 +297,39 @@ async def test_readme_helper_contract(monkeypatch):
     assert await ns["push_token_event"]("m") is True
     await ns["close_token_inspector"]()
     assert failing.http_failures == 1
+
+
+def _readme_batch() -> dict:
+    blocks = re.findall(r"```python\n(.*?)```", README.read_text(encoding="utf-8"), re.S)
+    (source,) = [b for b in blocks if "async def post_batch" in b]
+    namespace: dict = {"__name__": "readme_batch"}
+    exec(compile(source, "README.md:post_batch", "exec"), namespace)
+    return namespace
+
+
+@pytest.mark.parametrize(("handler", "expected"), [
+    (lambda r: httpx.Response(200, json=_ack(inserted=2, duplicates=1)), {"delivered": 3, "lost": 0, "unconfirmed": 0}),
+    (lambda r: httpx.Response(200, json=_ack(rejected=3)), {"delivered": 0, "lost": 3, "unconfirmed": 0}),
+    (lambda r: httpx.Response(200, json=_ack(inserted=1, rejected=2)), {"delivered": 1, "lost": 2, "unconfirmed": 0}),
+    (lambda r: httpx.Response(200, text="not json"), {"delivered": 0, "lost": 0, "unconfirmed": 3}),
+    (lambda r: httpx.Response(200, json=_ack(inserted=5)), {"delivered": 0, "lost": 0, "unconfirmed": 3}),
+    (lambda r: httpx.Response(500, json={}), {"delivered": 0, "lost": 3, "unconfirmed": 0}),
+    ("refuse", {"delivered": 0, "lost": 0, "unconfirmed": 3}),
+])
+async def test_readme_batch_example_accounts_for_every_event(monkeypatch, handler, expected):
+    """code-r1 P1 F4: a rejected event is lost, a malformed ack is unconfirmed, non-2xx is lost."""
+    monkeypatch.setenv("TOKEN_INSPECTOR_API_KEY", "readme-token-123")
+    ns = _readme_batch()
+    assert ns["valid_ack"] is tic.valid_ack
+    seen = []
+
+    def record(request):
+        seen.append(request)
+        if handler == "refuse":
+            raise httpx.ConnectError("down")
+        return handler(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(record)) as http:
+        result = await ns["post_batch"](http, [{"model": "m", "client_event_id": f"e{i}"} for i in range(3)])
+    assert result == expected
+    assert seen[0].url.path == "/api/events/batch" and seen[0].headers["X-Ingest-Token"] == "readme-token-123"

@@ -14,7 +14,7 @@ All notable user-visible and operational changes are documented here.
 - JEV pilot CLI (`jev_pilot.py`) with a paired-cohort report and pre-registered thresholds.
 - Request-composition counts on LLM events; `scripts/purge_task_prompts.py`, `scripts/seed_tasks_demo.py`, `scripts/rollback_v10.sql`.
 - Per-project prompt/JEV allowlist `TASK_PROMPT_ALLOWED_PROJECTS` (default empty = off): prompts are stored and scored only for proven root tasks of listed projects that carry the plugin's `prompt_eligibility` marker; a task that becomes a child loses its stored prompt. `/api/meta` reports `task_prompt_allowlist` (`configured`/`empty`) and `no_allowed_projects`.
-- JEV skips tasks of unlisted projects or non-root tasks with `project_not_allowed`, checked before every provider attempt; no automatic purge.
+- JEV skips tasks of unlisted projects or non-root tasks with `project_not_allowed`, and turns that have not ended with `task_not_completed`, checked before every provider attempt and before the retention checks; no automatic purge.
 - `GET /api/tasks?allowed_only=true` (token required); `jev_pilot.py select` uses it.
 - Plugin: `task_prompt_allowed_projects` and `task_prompt_deny_path_globs` (default `~/Projects/*-devir`); prompts only for root sessions, stripped from queue and spool when a session turns out to be a subagent.
 
@@ -23,6 +23,8 @@ All notable user-visible and operational changes are documented here.
 - `token_inspector_client.py` and the README `push_token_event` helper are a safe producer example: token, batch-only, status and ack checks, loss/unconfirmed counters, stable `client_event_id`, no prompt or error text.
 - The Hermes plugin no longer sends `error_message`; it sends an identifier-shaped `error_type` and `http_status`. The backend still accepts `error_message` from older producers.
 - Validation errors (single 422 and batch items) no longer echo the rejected input.
+- Safe client: events are validated at enqueue with the transport's JSON encoding (NaN/Infinity and invalid UTF-8 count as `serialization_failed`); the README "Batch ingest" example counts rejected events as lost and malformed acks as unconfirmed.
+- Plugin: late-child revocation is re-checked before every HTTP call and before a failed batch is spooled or dead-lettered; revoked sessions are kept for the process lifetime and an overflow strips every prompt (fail-closed); a path-denied session loses its root evidence; `error_message` is removed from every outgoing event, legacy spool replay included.
 
 ### Fixed
 

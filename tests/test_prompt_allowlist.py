@@ -210,16 +210,27 @@ async def test_validation_errors_never_echo_prompt(client, monkeypatch, caplog):
 # --- AC14 marker / AC15 old plugin -------------------------------------------------------------------------------
 
 
+async def _deliver(client, body, endpoint, project="x"):
+    """Metadata is always inserted, over either endpoint."""
+    if endpoint == "single":
+        assert (await _post(client, body, project)).status_code == 201
+    else:
+        assert (await _post_batch(client, [body], project))["inserted"] == 1
+
+
+@pytest.mark.parametrize("endpoint", ["single", "batch"])
 @pytest.mark.parametrize("marker", [None, "v0", "v" * 10_000])
-async def test_prompt_without_marker_is_not_stored(client, monkeypatch, outcomes, marker):
+async def test_prompt_without_marker_is_not_stored(client, monkeypatch, outcomes, marker, endpoint):
     _capture(monkeypatch, "x")
     body = _ev("a", task_hierarchy="root", **_prompt(605))
     if marker is not None:
         body["prompt_eligibility"] = marker
-    assert (await _post(client, body)).status_code == 201
+    await _deliver(client, body, endpoint)
     assert await _prompt_of("x") is None
     assert outcomes[-1]["prompt"] == "discarded_no_eligibility"
-    await _post(client, _ev("b", **ROOT, **_prompt(6051)))
+    assert MARKER not in await _events_text()
+    _absent(605)
+    await _deliver(client, _ev("b", **ROOT, **_prompt(6051)), endpoint)  # marked positive control
     assert (await _prompt_of("x")).startswith(f"{MARKER}-6051")
     for table in ("token_events", "tasks"):
         columns = [r[1] for r in await _rows(f"PRAGMA table_info({table})")]
@@ -227,10 +238,11 @@ async def test_prompt_without_marker_is_not_stored(client, monkeypatch, outcomes
     assert "v1-allowed" not in await _events_text()
 
 
-async def test_old_plugin_payload_cannot_store_prompt(client, monkeypatch):
+@pytest.mark.parametrize("endpoint", ["single", "batch"])
+async def test_old_plugin_payload_cannot_store_prompt(client, monkeypatch, endpoint):
     _capture(monkeypatch, "x")
     old = _ev("a", task_hierarchy="root", **_prompt(606))  # pre-upgrade plugin: prompt, no marker
-    assert (await _post(client, old)).status_code == 201
+    await _deliver(client, old, endpoint)
     assert await _prompt_of("x") is None
     _absent(606)
 
@@ -263,15 +275,16 @@ async def test_child_never_stores_prompt(client, monkeypatch, outcomes):
     _absent(607)
 
 
-async def _craft(ref, project="x", hierarchy="root", parent=None, root=None, prompt=None):
-    stamp = "2026-09-20T10:00:00.000000Z"
+async def _craft(ref, project="x", hierarchy="root", parent=None, root=None, prompt=None, last_seen=None,
+                 completion=None):
+    stamp = "2026-09-20T10:00:00.000000Z"  # a week before the JEV test clock: completion is inferred
     expires = (datetime.now(timezone.utc) + timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     await _exec(
         "INSERT INTO tasks (id, project_name, session_id, turn_id, parent_task_ref, root_task_ref, hierarchy_status, "
-        "first_seen_at, last_seen_at, prompt_text, prompt_captured_at, prompt_expires_at, created_at, updated_at) "
-        "VALUES (:id, :p, :id, :id, :parent, :root, :h, :n, :n, :t, :cap, :e, :n, :n)",
-        id=ref, p=project, parent=parent, root=root, h=hierarchy, n=stamp, t=prompt,
-        cap=stamp if prompt else None, e=expires if prompt else None)
+        "first_seen_at, last_seen_at, completion, prompt_text, prompt_captured_at, prompt_expires_at, created_at, "
+        "updated_at) VALUES (:id, :p, :id, :id, :parent, :root, :h, :n, :last, :c, :t, :cap, :e, :n, :n)",
+        id=ref, p=project, parent=parent, root=root, h=hierarchy, n=stamp, last=last_seen or stamp, c=completion,
+        t=prompt, cap=stamp if prompt else None, e=expires if prompt else None)
     return ref
 
 
@@ -367,6 +380,27 @@ def jev(client, monkeypatch):
     return clock
 
 
+async def _ledger():
+    """(attempt rows (status, cost), spend totals) at the JEV clock."""
+    rows = await _rows("SELECT status, COALESCE(actual_cost_usd, reserved_cost_usd) FROM evaluator_attempts")
+    async with AsyncSessionLocal() as session:
+        totals = await jev_scorer.spend(session, jev_scorer.now())
+    return rows, totals
+
+
+async def _assert_no_spend():
+    rows, totals = await _ledger()
+    assert rows == [] and totals == {"day_usd": 0.0, "month_usd": 0.0, "calls_day": 0}
+
+
+async def _assert_one_attempt_charged():
+    rows, totals = await _ledger()
+    assert len(rows) == 1 and rows[0][0] == "failed"  # completed, no reservation left open
+    assert totals["calls_day"] == 1 and totals["day_usd"] == pytest.approx(rows[0][1])
+    ((attempts, cost),) = await _rows("SELECT http_attempts, cost_usd FROM task_evaluations")
+    assert attempts == 1 and cost == pytest.approx(rows[0][1])
+
+
 def _listed(monkeypatch, value):
     monkeypatch.setenv("TASK_PROMPT_ALLOWED_PROJECTS", value)
     features.refresh()
@@ -383,7 +417,7 @@ async def test_worker_skips_not_allowed_project_without_provider_call(client, je
     await _run_eval([A], "run")
     assert gateway.calls == []
     assert await _rows("SELECT status, error_type FROM task_evaluations") == [("skipped", "project_not_allowed")]
-    assert await _rows("SELECT COUNT(*) FROM evaluator_attempts") == [(0,)]
+    await _assert_no_spend()
 
 
 async def test_worker_skips_non_root_tasks(client, jev, monkeypatch):
@@ -437,18 +471,22 @@ async def test_gate_rechecked_before_every_attempt(client, jev, monkeypatch, cha
         return
     assert len(gateway.calls) == 1
     assert await _rows("SELECT status, error_type FROM task_evaluations") == [("error", "project_not_allowed")]
-    assert await _rows("SELECT COUNT(*) FROM evaluator_attempts") == [(1,)]
+    await _assert_one_attempt_charged()
 
 
-@pytest.mark.parametrize("change", ["remove", "child"])
+@pytest.mark.parametrize("change", ["remove", "child", None])
 async def test_gate_rechecked_before_fallback(client, jev, monkeypatch, change):
     calls = []
 
     async def gateway(body, api_key):
-        calls.append(body["providerOptions"]["gateway"]["only"][0])
+        provider = body["providerOptions"]["gateway"]["only"][0]
+        calls.append(provider)
+        if provider == "digitalocean":
+            status, payload, headers = ok_from("digitalocean")
+            return httpx.Response(status, json=payload, headers=headers)
         if change == "remove":
             await _remove_listing(monkeypatch)
-        else:
+        elif change == "child":
             await _make_child()
         status, payload, headers = rate_limited("120")  # a long wait: typesafe-ai falls back at once
         return httpx.Response(status, json=payload, headers=headers)
@@ -456,9 +494,13 @@ async def test_gate_rechecked_before_fallback(client, jev, monkeypatch, change):
     monkeypatch.setattr(jev_scorer, "post_evaluation", gateway)
     await _craft(A, prompt="Add tests.")
     await _run_eval([A], "run")
+    if change is None:  # control: the same 429 really reaches the fallback provider
+        assert calls == ["typesafe-ai", "digitalocean"]
+        assert await _rows("SELECT status, provider_used FROM task_evaluations") == [("ok", "digitalocean")]
+        return
     assert calls == ["typesafe-ai"]  # no digitalocean call
     assert await _rows("SELECT status, error_type FROM task_evaluations") == [("error", "project_not_allowed")]
-    assert await _rows("SELECT COUNT(*) FROM evaluator_attempts") == [(1,)]
+    await _assert_one_attempt_charged()
 
 
 async def test_pre_attempt_gate_is_skipped(client, jev, monkeypatch):
@@ -477,7 +519,75 @@ async def test_pre_attempt_gate_is_skipped(client, jev, monkeypatch):
     await _run_eval([A], "run")
     assert gateway.calls == [] and calls["n"] >= 2
     assert await _rows("SELECT status, error_type FROM task_evaluations") == [("skipped", "project_not_allowed")]
-    assert await _rows("SELECT COUNT(*) FROM evaluator_attempts") == [(0,)]
+    await _assert_no_spend()
+
+
+# --- code-r1 P1 F1 / F2: completed turns only; gate before the retention checks ------------------------------------
+
+JEV_NOW = "2026-09-27T12:00:00.000000Z"  # the JEV test clock (test_jev_worker.START)
+
+
+@pytest.mark.parametrize(("completion", "last_seen", "scored"), [
+    (None, "2026-09-27T11:55:00.000000Z", False),  # open: last event 5 min ago
+    ("next_task", "2026-09-27T11:55:00.000000Z", True),
+    ("session_end", "2026-09-27T11:55:00.000000Z", True),
+    (None, "2026-09-27T10:30:00.000000Z", True),  # inferred: idle for 90 min
+])
+async def test_only_completed_turns_are_scored(client, jev, monkeypatch, completion, last_seen, scored):
+    gateway = Gateway(ok_from("typesafe-ai"))
+    monkeypatch.setattr(jev_scorer, "post_evaluation", gateway)
+    await _craft(A, prompt="Add tests.", completion=completion, last_seen=last_seen)
+    if not scored:
+        body = (await client.post("/api/tasks/evaluate", json={"task_refs": [A]},
+                                  headers={"X-Ingest-Token": TOKEN})).json()
+        assert body["skipped"] == [{"task_ref": A, "reason": "task_not_completed"}]
+    await _run_eval([A], "run")
+    if scored:
+        assert len(gateway.calls) == 1 and await _rows("SELECT status FROM task_evaluations") == [("ok",)]
+    else:
+        assert gateway.calls == []
+        assert await _rows("SELECT status, error_type FROM task_evaluations") == [("skipped", "task_not_completed")]
+        await _assert_no_spend()
+
+
+async def test_late_child_is_classified_before_the_turn_completes(client, jev, monkeypatch):
+    """The accepted late-child window: while the turn is open JEV never sends; by the time it completes the
+    child classification has nulled the prompt and the task is no longer a root."""
+    _capture(monkeypatch, "x")
+    gateway = Gateway()
+    monkeypatch.setattr(jev_scorer, "post_evaluation", gateway)
+    ref = task_store.task_ref("x", "s1", "s1:t:1")
+    await _post(client, _ev("a", occurred_at=JEV_NOW, **ROOT, **_prompt(612)))
+    await _run_eval([ref], "run1")  # open turn: not sent
+    await _post(client, _ev("b", occurred_at=JEV_NOW, task_hierarchy="child"))  # late child classification
+    await _post(client, _ev("c", turn="s1:t:2", occurred_at="2026-09-27T12:01:00Z", task_hierarchy="child"))
+    assert await _rows("SELECT completion, hierarchy_status, prompt_text FROM tasks WHERE id = :id", id=ref) == [
+        ("next_task", "child", None)]
+    await _run_eval([ref], "run2")
+    assert gateway.calls == []
+    assert await _rows("SELECT run_id, error_type FROM task_evaluations ORDER BY run_id") == [
+        ("run1", "task_not_completed"), ("run2", "project_not_allowed")]
+
+
+async def test_child_transition_between_attempts_reports_project_not_allowed(client, jev, monkeypatch):
+    _capture(monkeypatch, "x")
+    ref = task_store.task_ref("x", "s1", "s1:t:1")
+
+    async def child_arrives():  # a real ingest of the child metadata: the prompt is nulled (purge columns)
+        await _post(client, _ev("b", task_hierarchy="child"))
+
+    clock = HookClock(child_arrives)
+    monkeypatch.setattr(jev_scorer, "now", clock.now)
+    monkeypatch.setattr(jev_scorer, "sleep", clock.sleep)
+    gateway = Gateway((502, {"x": 1}, {}), ok_from("typesafe-ai"))
+    monkeypatch.setattr(jev_scorer, "post_evaluation", gateway)
+    await _post(client, _ev("a", **ROOT, **_prompt(613)))  # inferred completion at the JEV clock
+    await _run_eval([ref], "run")
+    assert len(gateway.calls) == 1
+    ((purged,),) = await _rows("SELECT prompt_purged_at FROM tasks WHERE id = :id", id=ref)
+    assert purged is not None
+    assert await _rows("SELECT status, error_type FROM task_evaluations") == [("error", "project_not_allowed")]
+    await _assert_one_attempt_charged()
 
 
 async def test_removing_project_blocks_stored_tasks_without_purge(client, jev, monkeypatch):
