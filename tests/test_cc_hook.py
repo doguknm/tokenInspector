@@ -25,8 +25,10 @@ def home(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def cc(home):
-    return modules()
+def cc(home, monkeypatch):
+    mods = modules()
+    monkeypatch.setattr(mods["cc_hook"], "HOOK_BOUND_S", 60.0)  # in-process: the watchdog must never kill pytest
+    return mods
 
 
 @pytest.fixture
