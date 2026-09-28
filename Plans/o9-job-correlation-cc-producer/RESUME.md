@@ -3,8 +3,8 @@
 State:
 - PM round 2 (`--finalize`) done → `2026-09-28-summary.md` (incl. "Open questions resolved").
 - Planner done → `database.md`, `backend.md`, `frontend.md`, `tests-other.md`, `tests-e2e.md`, `status.md`.
-- **Now:** hermes plan review r1 (one round, 2 parts: A = summary + database + backend, B = summary + frontend + tests-other + tests-e2e + status). Tags `o9-job-correlation-cc-producer-plan-r1-A` / `-B`; hermes queue row 15. Reports go to `hermes/<tag>.md`.
-- Next: apply findings (ask the user only for ones that conflict with a locked decision, open prod/flags, or grow scope) → lock the plan → write PLAN_BASE and the Hermes Code Review spec into status.md → commit/push → Phase 1 in a subagent.
+- Hermes plan review r1 done (2 parts, 41 findings; reports in `hermes/`). All 41 applied into the lane files (32 fixed, 9 merged into their Part A twin; none left unapplied) — table in status.md `## Hermes Reviews`. No round 2.
+- **Now:** user answers O13 (hook latency bound, default 5 s) → lock the plan → write PLAN_BASE (O11) and the Hermes Code Review spec (O12) into status.md → commit/push → Phase 1 in a subagent. S1 waits for O5 (owner of the AIFromScratch `hermes.sh`).
 
 Decisions already made (do not ask again):
 - Every lane Claude Opus 5.5, direct (frontend with `frontend-design`; tests-e2e extends the Playwright suite). Hermes plan review 1 round; hermes code review 1 round; Claude integration review (Opus).
