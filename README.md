@@ -61,7 +61,7 @@ Tasks are derived at ingest from each Hermes turn. Task prompt capture and JEV s
 | `TOKEN_INSPECTOR_ALLOWED_ORIGINS` | loopback origins | Extra origins for sensitive endpoints |
 | `REDACT_INTERNAL_HOST_SUFFIXES`, `REDACT_EXTRA_TERMS` | — | Extra redaction for internal domains and names |
 
-The systemd unit reads the key with `EnvironmentFile=%h/.config/token-inspector/secrets.env`. `GET /api/meta` shows both gates and a configuration preflight (`config_errors`) even while the flags are off. It also reports `task_prompt_allowlist` as `configured` or `empty`, never the names. With an empty list, `config_errors` holds `no_allowed_projects` for `capture` and `jev` (flags off: the reasons stay `not_enabled`); with a flag on, that feature's disabled reason becomes `no_allowed_projects` unless an earlier error (`ingest_token_missing`, `invalid_purge_interval`, `credentials_missing`, `invalid_budget_config`) comes first.
+The systemd unit reads the key with `EnvironmentFile=%h/.config/token-inspector/secrets.env`, set in the drop-in `~/.config/systemd/user/token-inspector.service.d/secrets.conf` (in production since 2026-09-28). `GET /api/meta` shows both gates and a configuration preflight (`config_errors`) even while the flags are off. It also reports `task_prompt_allowlist` as `configured` or `empty`, never the names. With an empty list, `config_errors` holds `no_allowed_projects` for `capture` and `jev` (flags off: the reasons stay `not_enabled`); with a flag on, that feature's disabled reason becomes `no_allowed_projects` unless an earlier error (`ingest_token_missing`, `invalid_purge_interval`, `credentials_missing`, `invalid_budget_config`) comes first.
 
 ### Per-project prompt allowlist (O10)
 
