@@ -29,13 +29,16 @@ Dashboard: http://127.0.0.1:8100/
 
 Production uses `DB_PATH` explicitly. Never assume the repository-local default database is production. Do not commit, mirror, or upload SQLite files or backups.
 
+Production runs the O10 release (backend `ddc7552`, schema 10). O9 (schema v11, jobs, cross-project child fix, Claude Code producer) is on `feat/task-telemetry-jev-pilot` only until the single O9 deploy (`Plans/o9-job-correlation-cc-producer/status.md` → Deploy Runbook); the Claude Code hook is not installed anywhere yet.
+
 ## Critical Technical Patterns
 
 - Raw prompts, responses, and tool arguments are off by default.
 - `STORE_RAW_PROMPTS=0` in production.
 - Prompt payload is accepted only as an explicit opt-in and is capped at 3000 characters.
 - Ingest remains fail-open for producers but validation remains strict at the backend.
-- `client_event_id` is idempotent per project using a partial unique SQLite index.
+- `client_event_id` is idempotent per project using a partial unique SQLite index; `cc-` ids (Claude Code producer) are unique across projects (v11, ADR-004).
+- Reserved tag keys `job_ref`, `runtime`, `work_type`, `job_attempt`, `producer` are normalized, never rejected; an invalid or unpaired `runtime`/`producer` marks the event `attribution_invalid` (stored, never counted). Tags cap: 1024 bytes, 20 keys — measure before adding a key (ADR-003).
 - SQLite requires WAL, `busy_timeout`, foreign keys, and additive migrations.
 - Cache-read, cache-creation, reasoning, prompt, and completion tokens remain distinct.
 - Requested model, resolved model, and pricing model remain distinct.
@@ -63,6 +66,8 @@ hook metadata
 → hermes fallback
 ```
 
+The Claude Code producer (`producers/claude_code/cc_attribution.py`) uses: configured alias → sanitized Git origin slug → Git root name → `claude-code`, skipping names equal to the hostname or shaped like an IPv4 address; `tests/fixtures/attribution_vectors.json` is byte-identical in both repos and pins parity with the plugin.
+
 The backend inventory defaults to direct Git children of `~/Projects`, is bounded by `TOKEN_INSPECTOR_MAX_PROJECTS`, and returns only canonical name, directory name, discovery source, and a hash-first workspace identifier.
 
 ## Debugging
@@ -74,7 +79,7 @@ Start with `systemctl --user status token-inspector.service`, the backend journa
 ```bash
 cd /home/dogukan/Projects/tokenInspector
 .venv/bin/python -m pytest -q
-.venv/bin/python -m py_compile *.py routes/*.py
+.venv/bin/python -m py_compile *.py routes/*.py scripts/*.py producers/claude_code/*.py
 node --check static/app.js
 
 DB_PATH=/tmp/token-inspector-dev.db STORE_RAW_PROMPTS=0 .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port 8100
@@ -102,6 +107,11 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 | JEV worker | `jev_scorer.py` |
 | Pilot CLI | `jev_pilot.py`, `pilot_metrics.py` |
 | Demo seed / rollback | `scripts/seed_tasks_demo.py`, `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` |
+| Cost per job API (v11) | `routes/jobs.py`; job tag normalization in `routes/events.py` (`_normalize_reserved`); task → job in `task_store.py` |
+| Cross-project parent repair | `scripts/repair_task_parents.py` (dry-run default) |
+| Schema rollback runner | `scripts/rollback_schema.py` (+ `scripts/rollback_v11.sql`) |
+| Claude Code producer (hook, installer) | `producers/claude_code/` (`cc_hook.py`, `install.py`, README) |
+| Job contract / dedup authority | `docs/adr/003-job-correlation-contract.md`, `docs/adr/004-cross-source-dedup-authority.md` |
 | Task prompt policy | `docs/adr/002-task-prompt-retention-and-jev.md` |
 | Tests | `tests/` (browser suite: `tests/browser/`, marker `browser`) |
 | Hermes producer plugin | `/home/dogukan/Projects/token_inspector` |
@@ -158,9 +168,9 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
    - **Fix/check:** Tests that need leftover bytes set `PRAGMA secure_delete=OFF` explicitly on the connection that creates them. Run the suite on hermes too before a deploy.
 
 12. **Dashboard URL returns `400 Invalid host header`**
-   - **Symptoms:** `https://hermes.tail3a755d.ts.net` (or any other proxied name) answers `Invalid host header`, although `curl http://127.0.0.1:8100/api/meta` on hermes works.
+   - **Symptoms:** `https://<tailnet-host>` (or any other proxied name) answers `Invalid host header`, although `curl http://127.0.0.1:8100/api/meta` on hermes works. The real tailnet name lives only in the systemd drop-in, never in repository docs.
    - **Root cause:** `TrustedHostMiddleware` (v10) only accepts `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`). `tailscale serve` forwards the tailnet name as the Host header.
-   - **Fix/check:** Keep the `~/.config/systemd/user/token-inspector.service.d/remote-access.conf` drop-in (README → Run), then run `systemctl --user daemon-reload && systemctl --user restart token-inspector.service`. Check with `curl -s -o /dev/null -w "%{http_code}" https://hermes.tail3a755d.ts.net/api/meta` from a tailnet machine (expect 200).
+   - **Fix/check:** Keep the `~/.config/systemd/user/token-inspector.service.d/remote-access.conf` drop-in (README → Run), then run `systemctl --user daemon-reload && systemctl --user restart token-inspector.service`. Check with `curl -s -o /dev/null -w "%{http_code}" https://<tailnet-host>/api/meta` from a tailnet machine (expect 200).
 
 13. **A nulled or purged prompt is still found in the `-wal` bytes**
    - **Symptoms:** A byte-level privacy test (or a manual `grep` of `<db>-wal`) still finds prompt text after a task became `child` and its prompt was NULLed, although `tasks.prompt_text` is NULL.
@@ -171,3 +181,28 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
    - **Symptoms:** A test that expects `tasks.prompt_text` (backend), a `task_prompt_text` on an emitted event (plugin) or a JEV provider call sees NULL, no prompt or `project_not_allowed`.
    - **Root cause:** Default-off allowlists and the root-only rule: the project must be listed, the event must carry `task_hierarchy="root"` and `prompt_eligibility="v1-allowed"`, the plugin session needs `_on_session_start` and the Sink needs `prompt_authorized=True`, and JEV rows must be proven roots.
    - **Fix/check:** Use the allowed-path fixtures (`_enable_capture` + `ROOT` in `tests/test_task_ingest.py`, the `jev` fixtures, plugin `_hooks(..., allowed=...)` + `_start`). Never relax the assertion instead.
+
+15. **Job tags missing on events (`/api/jobs` empty after a `hermes.sh` run)**
+   - **Symptoms:** A job launched through `hermes.sh send` or `devir-baslat` finished, but `GET /api/jobs?days=1` does not list it; its events have no `job_ref` / `work_type` tag.
+   - **Root cause:** One link of the chain is missing: the backend is below v11 (its 512-byte tag cap can reject the new plugin's events — plugin `counters.json` shows rejects; hence backend before plugin); the installed plugin predates O9 or the gateway was not restarted after install; the launcher copy used was not patched (S1–S3) so it exports no `TOKEN_INSPECTOR_JOB_*`; or a value failed its shape rule and was omitted silently (ADR-003).
+   - **Fix/check:** `curl -s http://127.0.0.1:8100/api/meta` → `schema_version ≥ 11`; check the plugin commit of the installed copy and restart with `hermes gateway restart` (no job running); inspect only the tag keys of the session's events (`json_extract(tags_json, '$.job_ref')`, `$.runtime`), never content; confirm the launcher copy exports the three variables right before `$AGENT -z`. `test_launcher_env_contract` checks the launcher copies synthetically.
+
+16. **Claude Code events missing**
+   - **Symptoms:** Claude Code sessions produce no `runtime=claude-code@windows` / `claude-code@hermes` events, or they stop arriving.
+   - **Root cause:** The hook is not installed (it is not, until the O9 deploy); the producer URL is wrong or its Host is not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (Windows reaches the backend through the tailnet name); an ingest token is required but not configured; or the cursor state is stuck behind a lock or a pending backlog.
+   - **Fix/check:** `python producers/claude_code/install.py --dry-run` → `already_present=3` means installed. Check reachability with `curl -s -o /dev/null -w "%{http_code}" "$TOKEN_INSPECTOR_URL/api/meta"` (expect 200, not 400). Check a token exists without printing it: `test -s ~/.config/token-inspector/ingest-token && echo present`. Read `counters.json` in the state dir (`%LOCALAPPDATA%\token_inspector_cc\` or `~/.local/state/token_inspector_cc/`): rising `failed_posts` = transport/allowlist, `rejected` = backend validation, `lock_skips` = the transcript was locked by another hook (a lock older than 10 s is taken over, e.g. after a watchdog kill). The hook is silent and always exits 0 by design.
+
+17. **Plugin tests fail to import on hermes from a temp worktree**
+   - **Symptoms:** `python -m pytest` in a hermes worktree of the plugin repo fails at collection with an import error for the plugin package.
+   - **Root cause:** The plugin's test `conftest.py` imports the package by the name `token_inspector`, so the directory holding the checkout must have exactly that name.
+   - **Fix/check:** Create the worktree as `.../<tmp>/token_inspector` (e.g. `git worktree add /tmp/<run>/token_inspector <branch>`), run the suite from there with the venv python and the Hermes runtime python, then remove the worktree.
+
+18. **A mutation runner runs on import or crashes on Windows test output**
+   - **Symptoms:** Importing a mutation-runner script (to reuse a helper, or by pytest collection) starts applying mutations; or the runner dies with `UnicodeDecodeError` while reading a pytest subprocess's output on Windows.
+   - **Root cause:** The runner had no `if __name__ == "__main__":` guard, so its module body executed on import; and `subprocess.run(..., text=True)` decodes with the Windows code page, which fails on non-UTF-8 bytes in test output.
+   - **Fix/check:** Every runner has a `__main__` guard and calls `subprocess.run(..., encoding="utf-8", errors="replace")`. After any interrupted run, verify every mutation's original (`old`) string is present in the target file before committing.
+
+19. **`test_repair_backup_accepts_real_concurrent_writer` fails intermittently on hermes**
+   - **Symptoms:** The repair test fails with `sqlite error; nothing was changed` about 1 run in 5 on hermes; a rerun passes. Windows is green.
+   - **Root cause:** The test's tight concurrent writer loop can starve the repair's `BEGIN IMMEDIATE` lock beyond `busy_timeout` (test timing, not the repair control; the script correctly refuses and changes nothing).
+   - **Fix/check:** Rerun the test alone to confirm it is this flake, not a regression. Open item: loosen the writer loop's timing before the O9 hermes code review (status.md Drift Log).

@@ -17,6 +17,12 @@ All notable user-visible and operational changes are documented here.
 - JEV skips tasks of unlisted projects or non-root tasks with `project_not_allowed`, and turns that have not ended with `task_not_completed`, checked before every provider attempt and before the retention checks; no automatic purge.
 - `GET /api/tasks?allowed_only=true` (token required); `jev_pilot.py select` uses it.
 - Plugin: `task_prompt_allowed_projects` and `task_prompt_deny_path_globs` (default `~/Projects/*-devir`); prompts only for root sessions, stripped from queue and spool when a session turns out to be a subagent.
+- Job correlation (O9, schema v11; not deployed yet): launcher env contract `TOKEN_INSPECTOR_JOB_REF` / `_WORK_TYPE` / `_JOB_ATTEMPT` (the `/hermes` skill passes `HERMES_WORK_TYPE` / `HERMES_JOB_ATTEMPT` to `hermes.sh`), reserved tag keys `job_ref`, `runtime`, `work_type`, `job_attempt`, `producer` normalized at ingest without rejecting events, `attribution_invalid` mark, `tasks.job_ref` (first job wins) and `tasks.job_ref_conflicts` (ADR-003).
+- `GET /api/jobs` and a dashboard **Jobs** view: cost per launcher job from priced calls only (unpriced count shown, never `$0`), JEV usage and invalid attribution excluded, conflicts as calls and tasks, runtime/work-type/day filters that select whole jobs.
+- `scripts/repair_task_parents.py`: re-links pre-O9 cross-project child tasks (dry-run default, counts only; `--apply` takes a verified online backup first).
+- `scripts/rollback_schema.py` (+ `scripts/rollback_v11.sql`): the only supported schema rollback, with an exact source-version guard.
+- Claude Code producer `producers/claude_code/` (O9; built, **not installed**): stdlib-only `Stop`/`SubagentStop`/`SessionEnd` hook sending one event per API call with allowlisted metadata only (never text or paths), 5 s bound, fail-open, at-least-once with idempotent `cc-` ids; subagents as child tasks; `install.py` with a content-free dry-run summary, exact-command ownership, backup, atomic write and the PossibleSkills settings lock (ADR-004).
+- Plugin: reads the launcher job env once per process and sends validated `job_ref` / `work_type` / `job_attempt` plus `runtime=hermes-agent` / `producer=hermes-plugin` on its events, and `parent_project_name` on child events.
 
 ### Changed
 
@@ -24,12 +30,15 @@ All notable user-visible and operational changes are documented here.
 - The Hermes plugin no longer sends `error_message`; it sends an identifier-shaped `error_type` and `http_status`. The backend still accepts `error_message` from older producers.
 - Validation errors (single 422 and batch items) no longer echo the rejected input.
 - Safe client: events are validated at enqueue with the transport's JSON encoding (NaN/Infinity and invalid UTF-8 count as `serialization_failed`); the README "Batch ingest" example counts rejected events as lost and malformed acks as unconfirmed.
+- Event tags may encode to 1024 bytes (was 512); the 20-key limit is unchanged.
+- `client_event_id` values starting with `cc-` are reserved for the Claude Code producer and unique across projects (a resumed copy in another project is a duplicate); a `runtime` must come with its paired `producer` or the event is marked `attribution_invalid` and not counted in jobs.
 - Plugin: late-child revocation is re-checked before every HTTP call and before a failed batch is spooled or dead-lettered; revoked sessions are kept for the process lifetime and an overflow strips every prompt (fail-closed); a path-denied session loses its root evidence; `error_message` is removed from every outgoing event, legacy spool replay included.
 
 ### Fixed
 
 - Dashboard: models/projects that are fully unpriced show an `unpriced` badge instead of `$0.0000`, and mixed rows show the unpriced count. Project, model, role and pricing names are HTML-escaped everywhere, and the pricing buttons read the model from `data-model`.
 - The app lifespan disposes the database engine on shutdown, so the process no longer hangs at exit on an open aiosqlite connection.
+- A subagent task whose parent turn is in another project now gets the correct `parent_task_ref` and root (the plugin sends a validated `parent_project_name`); existing rows are fixed by `scripts/repair_task_parents.py`.
 
 - Privacy-first single and batch lifecycle ingest with correlation metadata.
 - Concurrency-safe idempotency using project-scoped client event IDs.

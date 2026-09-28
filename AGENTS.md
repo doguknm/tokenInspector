@@ -14,6 +14,8 @@ The Hermes producer is a separate standalone plugin repository:
 
 Do not modify Hermes core to add telemetry. The producer must remain bounded, short-timeout, asynchronous, fail-open, and privacy-first.
 
+The second producer, the Claude Code hook, lives in this repository under `producers/claude_code/` (stdlib only, runs as a plain script). The same rules apply: bounded (5 s per hook), fail-open (always exit 0, silent), allowlisted metadata only. Installing it changes the global `~/.claude/settings.json` and is a user-approved deploy step.
+
 ## Production
 
 ```text
@@ -28,10 +30,10 @@ The service unit sets `DB_PATH`; the repository-relative default exists only for
 ## Architecture
 
 ```text
-Hermes lifecycle
-  → token_inspector plugin bounded queue
-  → POST /api/events/batch
-  → validation + normalization + idempotent insert
+Hermes lifecycle → token_inspector plugin bounded queue ─────────────────────┐
+Claude Code Stop/SubagentStop/SessionEnd hook → producers/claude_code (O9) ──┤
+  → POST /api/events/batch  ◄────────────────────────────────────────────────┘
+  → validation + reserved tag normalization (job_ref, runtime, producer, …) + idempotent insert
   → pricing rule/alias resolution
   → SQLite WAL database
   → analytics API
@@ -66,8 +68,12 @@ Backend unavailability must never break the caller. Backend validation failures 
 | `scripts/purge_task_prompts.py` | stdlib-only purge used by the rollback runbook |
 | `scripts/seed_tasks_demo.py` | fixed demo DB for the Tasks view and browser tests |
 | `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` | schema rollback and code-only rollback check |
+| `routes/jobs.py` | `GET /api/jobs`: cost per launcher job (read-only, no auth) |
+| `scripts/repair_task_parents.py` | stdlib-only re-link of pre-O9 cross-project child tasks; dry-run default, verified backup before `--apply`, counts only |
+| `scripts/rollback_schema.py`, `scripts/rollback_v11.sql` | the only supported schema rollback (v11 → v10): exact source-version guard, SQLite ≥ 3.35 |
+| `producers/claude_code/` | stdlib-only Claude Code hook producer: `cc_hook.py` (entry, watchdog, fail-open), `cc_transcript.py` (reader, group finality), `cc_events.py` (allowlisted mapping, `cc-` ids), `cc_attribution.py`, `cc_config.py` (URL, token, aliases, job env), `cc_state.py` (cursor, locks, counters), `cc_client.py` (batch POST, `valid_ack`), `install.py` (settings.json installer) |
 | `static/` | dashboard shell, charts, tables, styles (Tasks view included) |
-| `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot regressions |
+| `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot, jobs, repair, Claude Code producer (`test_cc_*.py`, `test_dedup_authority.py`) regressions |
 | `tests/browser/` | Playwright suite (marker `browser`; skipped without Playwright) |
 
 ## Data and Privacy Contract
@@ -105,11 +111,16 @@ Never persist raw response bodies or tool arguments. Never send absolute workspa
 
 ## Tasks (schema v10)
 
-A task is one Hermes turn (`(project_name, session_id, turn_id)`); Hermes' `task_id` is kept as `source_task_id` because it is session-scoped on the gateway. `task_ref = sha256(project \x1f session_id \x1f turn_id)[:32]`. Start complexity uses one rule for backfill and ingest (method `request-shape-v1` from the column or `tags.complexity_version`, earliest `(time, id)` wins). Completion is recomputed per project+session after every event, so arrival order does not matter. Hierarchy comes from `parent_session_id` + `parent_turn_id` (plugin `subagent_start`); `child` is never downgraded.
+A task is one Hermes turn (`(project_name, session_id, turn_id)`); Hermes' `task_id` is kept as `source_task_id` because it is session-scoped on the gateway. `task_ref = sha256(project \x1f session_id \x1f turn_id)[:32]`. Start complexity uses one rule for backfill and ingest (method `request-shape-v1` from the column or `tags.complexity_version`, earliest `(time, id)` wins). Completion is recomputed per project+session after every event, so arrival order does not matter. Hierarchy comes from `parent_session_id` + `parent_turn_id` (plugin `subagent_start`); `child` is never downgraded. A cross-project child also carries `parent_project_name` (validated by the strict name rule, never stored; invalid → the child's own project), so its `parent_task_ref` is hashed with the parent's project; `scripts/repair_task_parents.py` re-links rows written before that fix.
+
+## Jobs (schema v11, O9 — not deployed yet)
+
+A launcher job is an aggregate over event tags, not a table (ADR-003). The launcher exports `TOKEN_INSPECTOR_JOB_REF` / `_WORK_TYPE` / `_JOB_ATTEMPT`; producers send them as tags `job_ref` / `work_type` / `job_attempt` only when they match their shapes, plus their own `runtime` and `producer`. `_normalize_reserved` (`routes/events.py`) normalizes the reserved keys without ever rejecting an event: invalid `job_ref`/`job_attempt` dropped, unknown `work_type` → `other`, and an invalid or unpaired `runtime`/`producer` drops both and sets `attribution_invalid: true` (ADR-004 pairing table). `tasks.job_ref` holds the first valid job of the task; a later different one increments `tasks.job_ref_conflicts` (conflicting calls) and is never applied. The job of an event is its task's job, else its own tag. `job_attempt` is the launcher retry, never the per-call `attempt`.
 
 ### What the numbers mean (consumer contract)
 
-- **Coverage:** the only producer today is the Hermes plugin (runtime `hermes-agent`). Not measured: Claude Code on Windows, `claude -p` hand-off runs started by `hermes.sh` on hermes (a separate runtime the plugin does not see), and application provider calls. Totals are hermes-agent totals, not all LLM spend.
+- **Coverage:** in production today the only producer is the Hermes plugin (runtime `hermes-agent`); totals there are hermes-agent totals, not all LLM spend. After the O9 deploy there are two counting producers, one per runtime (ADR-004): `hermes-plugin` (`hermes-agent`) and `claude-code-hook` (`claude-code@windows`; `claude-code@hermes`, which includes `claude -p` hand-off runs started by `hermes.sh devir-baslat` and interactive Claude Code sessions on hermes — the latter without a `job_ref`). Not measured: application provider calls (`app` runtime, no producer built), and Claude Code calls that leave no usage record (API errors, an interrupted last call of a session that never continues). The Claude Code hook is not installed until that deploy.
+- **Jobs:** `GET /api/jobs` counts `llm_request` events only, excluding evaluator (JEV) usage and `attribution_invalid` events. `cost_usd` sums priced calls and is `null` when none is priced; `unpriced_count > 0` means incomplete. A task belongs to at most one job (first job wins); conflicts are reported as calls (`conflict_count`) and affected tasks (`conflict_task_count`). Filters select whole jobs; `days` selects jobs by their last counted event, sums cover the whole job. There is no job-duration event: `first_event_at`/`last_event_at` are not end-to-end job time.
 - **Task totals** come from that task's own `llm_request` events only. A root task excludes its children, so summing tasks counts each call once. A task row and its calls must never be added together.
 - **Cost:** `cost_usd` sums priced calls only and is `null` when none is priced. `unpriced_count > 0` means the total is incomplete; it is never zero or free. `estimated_cost_usd` holds partial, estimated and legacy costs separately. For subscription providers the dollar value is a list-price estimate, not a bill or a quota.
 - **Wall time** is last event − first event of the task. It is not queue time and not end-to-end job time; a launcher measures those.
@@ -119,7 +130,7 @@ A task is one Hermes turn (`(project_name, session_id, turn_id)`); Hermes' `task
 
 ## Idempotency and Concurrency
 
-- `client_event_id` is unique within `project_name` when non-null.
+- `client_event_id` is unique within `project_name` when non-null. Ids starting with `cc-` (reserved for the Claude Code producer) are unique across projects (`ux_token_events_cc_client_event`, v11); a conflict on either index is a duplicate, and the first arrival owns project and task (ADR-004).
 - SQLite 3.24+ is required for atomic conflict handling.
 - WAL, `busy_timeout=5000`, foreign keys, and `synchronous=NORMAL` are required.
 - Schema changes are additive migrations; do not replace the production DB.
@@ -191,6 +202,8 @@ hook metadata
 → hermes fallback
 ```
 
+The Claude Code producer (`cc_attribution.py`) resolves the hook's `cwd` locally with: configured alias (longest root prefix) → sanitized Git origin slug → Git root name → `claude-code`; a name equal to the hostname/FQDN or shaped like an IPv4 address is skipped. Parity with the plugin is pinned by `tests/fixtures/attribution_vectors.json` (byte-identical in both repos).
+
 If a phantom project appears, trace it by `session_id`, `trace_id`, timestamp, `project_source`, and `project_confidence` before changing code or data.
 
 ## API Families
@@ -228,6 +241,8 @@ GET  /api/tasks/evaluator-status
 GET  /api/tasks/evaluator-runs/{run_id}
 GET  /api/tasks/retention-status
 POST /api/tasks/purge-expired         (sensitive; dry_run=true by default)
+
+GET  /api/jobs                        (days 1–3650 = 30, runtime, work_type, page, page_size ≤ 200; invalid filter → 400 {"error":"invalid_filter"})
 ```
 
 Every `by-*` grouping, `timeseries` and `project-inventory` row carries per-category sums `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens`. `prompt_tokens` never includes cache (ingest subtracts it when `input_tokens_include_cache` is set). The older `total_tokens` key stays input + output only; the dashboard labels its all-type total as a sum computed from the four fields.
@@ -241,7 +256,7 @@ Ingest auth is optional and controlled by deployment configuration. If enabled, 
 ```bash
 cd /home/dogukan/Projects/tokenInspector
 .venv/bin/python -m pytest -q
-.venv/bin/python -m py_compile *.py routes/*.py
+.venv/bin/python -m py_compile *.py routes/*.py scripts/*.py producers/claude_code/*.py
 node --check static/app.js
 git diff --check
 ```
@@ -271,12 +286,17 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 
 - `SQLModel.metadata.create_all` runs before migrations, so the model classes define new tables; `_m10` creates them with `checkfirst` and adds `token_events` columns in declaration order so fresh and migrated schemas agree.
 - The migration engine emits `BEGIN IMMEDIATE`; without it pysqlite autocommits DDL and a failed migration leaves partial tables.
-- `TrustedHostMiddleware` rejects any Host not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`); test clients use `http://test`, so the test conftest adds `test`. Production serves the dashboard to the tailnet through `tailscale serve` (`https://hermes.tail3a755d.ts.net` → `127.0.0.1:8100`), so that host and origin are allowed in the `remote-access.conf` systemd drop-in (README → Run).
+- `TrustedHostMiddleware` rejects any Host not in `TOKEN_INSPECTOR_ALLOWED_HOSTS` (default `127.0.0.1,localhost`); test clients use `http://test`, so the test conftest adds `test`. Production serves the dashboard to the tailnet through `tailscale serve` (`https://<tailnet-host>` → `127.0.0.1:8100`), so that host and origin are allowed in the `remote-access.conf` systemd drop-in (README → Run). The real tailnet name lives only in that drop-in, never in repository docs.
 - Retention globs `<db>.bak-v*` but skips `-wal`/`-shm`/`-journal` siblings, which are not databases.
 - The lifespan ends with `engine.dispose()`: aiosqlite worker threads are non-daemon, so an undisposed pooled connection blocks process exit.
 - Distro SQLite builds (hermes) default `secure_delete` ON; tests that need leftover freed-page bytes set it OFF explicitly.
 - Never normalize allowlist entries with the plugin's `normalize_project_name`: it falls back to `hermes` on garbage, so a typo would silently allowlist the `hermes` fallback. Both repos drop invalid entries instead.
-- **Known defect (Q1, not fixed):** `_upsert_task` builds `parent_task_ref` from the child event's **own** `project_name`, so a cross-project child gets a wrong `parent_task_ref`. Under the root-only rule no child stores a prompt anyway, so this affects hierarchy data only.
+- **Cross-project child (Q1, fixed in O9):** `_upsert_task` hashes the parent with the validated `parent_project_name` when present (else the child's own project), and the re-root update is no longer limited to one project. Rows written before the fix keep a dangling `parent_task_ref` until `scripts/repair_task_parents.py --apply` runs (dry-run first; `--apply` only with user approval on prod).
+- Tags are capped at `TAG_BYTES_MAX` = 1024 bytes and 20 keys (`routes/events.py`). The worst-case plugin tags measure 17 keys / 722 bytes (`tests/fixtures/worst_case_plugin_tags.json`, byte-identical in both repos); measure again before adding a tag key.
+- `attribution_invalid` is backend-only: an incoming value is removed before normalization, and the mark is set only when a present `runtime`/`producer` was dropped. Marked events are stored but never counted and never treated as legacy `hermes-agent`.
+- Schema rollback only through `scripts/rollback_schema.py`, never by running a `rollback_v*.sql` by hand.
+- The Claude Code hook must end through `sys.exit(main())`, not `os._exit`, or buffered output can be dropped silently; only the watchdog hard-exits. It must stay stdlib-only (`test_cc_producer_is_stdlib_only`).
+- Global Claude Code hooks take effect in every running session on that machine immediately, without a restart: run `install.py --apply` only after the backend with the Phase 2 code is live, and `--uninstall --apply` first if anything misbehaves or before a backend rollback below it.
 - The child-transition null overwrites the row in place (`secure_delete`), but the WAL frame that held the prompt stays until the next checkpoint (auto-checkpoint or the retention loop's `wal_checkpoint(TRUNCATE)`). Byte-level tests checkpoint first.
 - `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters; they show up only in the aiosqlite DEBUG driver log (off in production), never in application logs.
 - Prompt tests after O10 must take the allowed path: list the project, send `task_hierarchy="root"` and `prompt_eligibility="v1-allowed"` (backend), or call `_on_session_start` and pass the attach authorization (plugin). JEV test rows must be `root`.

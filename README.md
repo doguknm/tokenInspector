@@ -22,13 +22,13 @@ Production on this machine is managed by the `token-inspector.service` systemd u
 
 Open http://127.0.0.1:8100 on the server itself.
 
-**Remote dashboard (from another tailnet machine):** hermes has no desktop, so the dashboard is served to the tailnet by `tailscale serve`, which proxies `https://hermes.tail3a755d.ts.net` to `127.0.0.1:8100`. The service still binds loopback only. It is reachable from tailnet devices only, never from the internet. The Host and Origin allowlists must include that name. They are set in a drop-in, not in the unit itself:
+**Remote dashboard (from another tailnet machine):** hermes has no desktop, so the dashboard is served to the tailnet by `tailscale serve`, which proxies `https://<tailnet-host>` (the machine's tailnet HTTPS name) to `127.0.0.1:8100`. The service still binds loopback only. It is reachable from tailnet devices only, never from the internet. The Host and Origin allowlists must include that name. They are set in a drop-in, not in the unit itself; the real name lives only in that drop-in, never in repository files:
 
 ```ini
 # ~/.config/systemd/user/token-inspector.service.d/remote-access.conf
 [Service]
-Environment=TOKEN_INSPECTOR_ALLOWED_HOSTS=127.0.0.1,localhost,hermes.tail3a755d.ts.net
-Environment=TOKEN_INSPECTOR_ALLOWED_ORIGINS=https://hermes.tail3a755d.ts.net
+Environment=TOKEN_INSPECTOR_ALLOWED_HOSTS=127.0.0.1,localhost,<tailnet-host>
+Environment=TOKEN_INSPECTOR_ALLOWED_ORIGINS=https://<tailnet-host>
 ```
 
 Apply it with `systemctl --user daemon-reload && systemctl --user restart token-inspector.service`, and check it with `tailscale serve status`. Read views need no token. Sensitive actions (prompt text, labels, evaluate, purge) still require `X-Ingest-Token`.
@@ -42,6 +42,7 @@ Apply it with `systemctl --user daemon-reload && systemctl --user restart token-
 | Models | Cross-project latency bar chart, cost comparison table |
 | Complexity | Per-call `request-shape-v1` tier (1–5), filterable by project, model, method and 7/30/90 days: a calls/tasks/tokens/cost-per-tier chart split by model, a per-tier volume table (calls, tasks, input / cache read / cache write / output with per-call and per-task averages) and a tier × model table (per-task and per-call tokens, latency, TTFT, error rate, priced cost per task with unpriced calls shown, completion counts, low-sample and lowest-cost/latency marks); routing recommendations table |
 | Tasks | One row per task (a Hermes turn): request-shape-v1 start complexity, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state; a start-complexity vs JEV scatter; a detail panel with probabilities, child tasks and evaluations. Never shows prompt text |
+| Jobs | One row per launcher job (`job_ref`), filterable by runtime, work type and 7/30/90 days: work type, runtime, projects, tasks, calls, the four token types and their sum, priced cost with the unpriced count (never `$0`), estimated cost, first/last event (not job duration), attempts and conflicts (calls / tasks); an anomaly line for job conflicts and invalid attribution |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
 
 ## Task telemetry and the JEV pilot
@@ -96,6 +97,43 @@ python jev_pilot.py report --sample <file> --labeler <you> --out Plans/task-tele
 ```
 
 Rollback and purge: see the runbook in ADR-002 (`scripts/purge_task_prompts.py`, `scripts/rollback_v10.sql`).
+
+## Launcher jobs and cost per job (O9, schema v11)
+
+> **Status:** on the feature branch, not deployed. Production still runs the O10 release until the single O9 deploy.
+
+A launcher job (`hermes.sh send`, `hermes.sh devir-baslat`) is tied to its LLM calls through event tags. Contract: [ADR-003](docs/adr/003-job-correlation-contract.md).
+
+| Env var (launcher → producer) | Tag | Accepted shape |
+|---|---|---|
+| `TOKEN_INSPECTOR_JOB_REF` | `job_ref` | the launcher id `[devir-]YYYYMMDD-HHMMSS-<pid>` |
+| `TOKEN_INSPECTOR_WORK_TYPE` | `work_type` | `brainstorm`, `review`, `code`, `devir`, `k1`, `k2`; anything else valid-shaped becomes `other` |
+| `TOKEN_INSPECTOR_JOB_ATTEMPT` | `job_attempt` | integer 1–9999 (launcher retry, not the per-call `attempt`) |
+
+The `/hermes` skill passes `HERMES_WORK_TYPE` / `HERMES_JOB_ATTEMPT` to `hermes.sh`, which validates them and exports the variables above right before the agent starts. Producers add `runtime` (`hermes-agent`, `claude-code@windows`, `claude-code@hermes`) and `producer` (`hermes-plugin`, `claude-code-hook`) themselves.
+
+- **Never rejected.** The backend normalizes the reserved keys (`job_ref`, `runtime`, `work_type`, `job_attempt`, `producer`) instead of rejecting the event. An invalid or unpaired `runtime`/`producer` marks the event `attribution_invalid`: stored, never counted in jobs.
+- **Tag cap** is 1024 bytes and 20 keys (was 512 bytes).
+- **One job per task:** the first valid `job_ref` wins; a later different one is counted in `job_ref_conflicts`, never applied.
+- **Cost per job** sums priced calls only; `cost_usd` is `null` when no call is priced, and `unpriced_count > 0` means the total is incomplete. JEV evaluator usage is excluded. There is no job duration: first/last event times are not end-to-end job time.
+- **Install order** inside the one deploy: backend (new cap) before the plugin that sends the new keys.
+
+**Cross-project subagents.** A child whose parent turn lives in another project now links to it: the plugin sends a validated `parent_project_name` (never stored). Rows written before the fix are repaired with:
+
+```bash
+python scripts/repair_task_parents.py --db "$DB_PATH"            # dry-run (default): counts only
+python scripts/repair_task_parents.py --db "$DB_PATH" --apply    # verified online backup first, then one transaction
+```
+
+`--backup-dir DIR` puts the backup elsewhere (default: next to the DB, `<db>.bak-repair-<UTC stamp>`). Output is one count per class, never refs or names.
+
+**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 10` (service stopped; exact source-version guard, SQLite ≥ 3.35). It runs `scripts/rollback_v11.sql` and names the app commit to start afterwards.
+
+## Claude Code producer
+
+`producers/claude_code/` is a stdlib-only Claude Code hook (`Stop`, `SubagentStop`, `SessionEnd`) that sends one `llm_request` event per API call from the session transcript: allowlisted metadata only, never prompt or response text, tool data or paths. It is bounded to 5 s per hook, fail-open, and at-least-once with idempotent `cc-` event ids that are unique across projects ([ADR-004](docs/adr/004-cross-source-dedup-authority.md)). Install, configuration, sent fields and limits: [producers/claude_code/README.md](producers/claude_code/README.md).
+
+> **Status:** built and tested, **not installed** on any machine yet. `install.py` defaults to a content-free dry-run summary; `--apply` changes the global `~/.claude/settings.json` and is a separate, user-approved deploy step.
 
 ## Connecting Hermes or any other project
 
@@ -230,7 +268,7 @@ async def post_batch(client: httpx.AsyncClient, events: list[dict]) -> dict:
     return result
 ```
 
-The batch endpoint deduplicates by `client_event_id` when present.
+The batch endpoint deduplicates by `client_event_id` when present (per project; ids starting with `cc-`, reserved for the Claude Code producer, across projects).
 
 ## Hermes integration notes
 
@@ -255,6 +293,8 @@ GET  /api/events?project=&model=&status=  Paginated event log
 
 GET  /api/meta                            Schema version, feature gates, config_errors, task_prompt_allowlist
 GET  /api/tasks?allowed_only=true         Tasks of allowlisted projects only (needs X-Ingest-Token)
+GET  /api/jobs?days=30&runtime=&work_type=&page=1&page_size=50
+                                          Cost per launcher job (read-only, no auth; invalid filter → 400 invalid_filter)
 
 GET  /api/analytics/summary?days=7        Overall stats
 GET  /api/analytics/project-inventory     Bounded Git inventory with telemetry status

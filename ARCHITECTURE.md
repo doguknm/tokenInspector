@@ -16,6 +16,18 @@ Producer lifecycle
 
 The Hermes producer lives in the separate `token_inspector` repository and registers lifecycle hooks through the supported plugin registry.
 
+A second producer (O9, on the feature branch, not installed yet) is the Claude Code hook in `producers/claude_code/`. It runs as a stdlib-only script on Claude Code's `Stop`, `SubagentStop` and `SessionEnd` hooks, reads only the new part of the session transcript, and posts one `llm_request` per API call to the same batch endpoint:
+
+```text
+Claude Code hook (stdin: transcript location + cwd only)
+  → transcript reader (usage records, streaming group finality, subagent files)
+  → allowlisted mapping (pseudonymized ids, cc- client_event_id, runtime/producer/job tags)
+  → cursor state per transcript (lock, checkpoint after each acknowledged batch)
+  → POST /api/events/batch (2 s timeout, 5 s bound per hook, fail-open)
+```
+
+Each runtime has exactly one counting producer (ADR-004): `hermes-agent` → Hermes plugin, `claude-code@windows` / `claude-code@hermes` → Claude Code hook. The backend enforces the pairing.
+
 ## Trust Boundaries
 
 ### Producer
@@ -41,6 +53,23 @@ The dashboard is a read-oriented localhost UI. It distinguishes filesystem inven
 ```
 
 is the idempotency boundary when `client_event_id` exists. Session/turn/trace/span fields are correlation dimensions, not uniqueness guarantees.
+
+Exception (v11): `cc-` ids, reserved for the Claude Code producer and derived from the provider's message and request ids, are unique across projects, so a resumed copy that resolves to another project counts once, in the project of first arrival (ADR-004).
+
+## Job Correlation (schema v11)
+
+```text
+hermes.sh send / devir-baslat → exports TOKEN_INSPECTOR_JOB_REF / _WORK_TYPE / _JOB_ATTEMPT
+  → producer process (hermes -z plugin, or claude -p hook) reads them once, keeps valid shapes only
+  → event tags job_ref, work_type, job_attempt + runtime, producer
+  → ingest: _normalize_reserved (never rejects; invalid pair → attribution_invalid)
+  → task upsert: tasks.job_ref = first valid job; later different job → job_ref_conflicts + 1
+  → GET /api/jobs: aggregate per job (job of an event = its task's job, else its own tag) → Jobs view
+```
+
+A job is an aggregate, not a table, and a task belongs to at most one job. Counted events are `llm_request` only, excluding evaluator usage and `attribution_invalid` events; cost is priced calls only (ADR-003).
+
+A cross-project subagent names its parent's project (`parent_project_name`, validated, never stored), so the parent task ref is hashed with the right project; `scripts/repair_task_parents.py` re-links rows written before that fix.
 
 ## Model and Pricing Identity
 
@@ -99,6 +128,8 @@ Backend unit: token-inspector.service
 Bind: 127.0.0.1:8100
 Production DB: user-local application data directory
 Plugin: token_inspector, independently installed and gateway-loaded
+Claude Code hook: global ~/.claude/settings.json entries via producers/claude_code/install.py (not installed yet)
+Claude Code hook state: per-user local state dir (cursor per transcript, counters.json with integers only)
 ```
 
 Remote exposure is not part of the default architecture. If enabled, it must remain private-network-only; public Funnel-style exposure is rejected.
@@ -106,7 +137,9 @@ Remote exposure is not part of the default architecture. If enabled, it must rem
 ## Failure Behavior
 
 - Backend down: producer spools the batch durably and replays it later; caller proceeds. Only the in-memory queue (≤ 2,048 events) and the in-flight batch can be lost on a crash.
+- Backend down for the Claude Code hook: the hook exits 0 within its bound; the cursor does not advance, so the next hook resends (at-least-once, idempotent by `cc-` id).
 - Duplicate event: database conflict path returns deduplicated result.
+- Invalid job tags or runtime/producer pair: normalized or marked `attribution_invalid`, never rejected.
 - Unknown model price: event persists as unpriced.
 - Invalid event: rejected and counted; no fabricated fallback values.
 - NotebookLM unavailable: local docs/Vault succeed and external sync is queued.
@@ -120,3 +153,5 @@ Remote exposure is not part of the default architecture. If enabled, it must rem
 - Deriving project identity only from folder name: diverges from canonical repository identity.
 - Mixing repository inventory with event aggregation: implies activity where none occurred.
 - Unbounded recursive home-directory discovery: privacy and performance risk.
+- A jobs table or job-level launcher event: a job is an aggregate of tagged events; there is no job duration (ADR-003).
+- Building Claude Code events from hook stdin: only transcript usage records count, so re-runs, streaming lines and resumed copies count once (ADR-004).
