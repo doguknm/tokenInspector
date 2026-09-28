@@ -294,3 +294,10 @@ Mutation results (backend and safe client local; plugin local **and** on hermes,
 | PM22 | caught | `test_llm_error_has_no_error_message`, `test_no_error_message_on_any_event_path` |
 | PM23 | caught | `test_error_type_is_identifier_or_other` (3) |
 | PM24 | caught | `test_session_discriminator_free_text_becomes_other` (2) |
+
+### Prod deploy and live check (2026-09-28, user-approved)
+- Preflight: backend `STORE_TASK_PROMPTS`/`JEV_ENABLED` off, secrets.env sets no flag, plugin `capture_task_prompt` off. Online backup `~/backups/token-inspector-pre-o10-*.db` (integrity ok, 9451/9451 events).
+- Backend first: hermes `main` 6167ff7 → ddc7552 (no schema/deps change), O7 drop-in `secrets.conf` (`EnvironmentFile=%h/.config/token-inspector/secrets.env`) loaded, service active. `/api/meta`: `task_prompt_allowlist: "empty"`, capture/JEV `not_enabled`, `config_errors` lists `ingest_token_missing` and `no_allowed_projects` (preflight, expected). Journal clean.
+- Plugin second: no agent job and 0 queued/running `evaluator_runs`; source + installed copy f19ffd2 → 4b069b4; `hermes gateway restart` (PID 18111 → 26253).
+- Post-check: a read-only hermes turn that used one subagent produced 8 metadata events and two tasks: root (`hierarchy_status='root'`, no parent) and child (`hierarchy_status='child'`, `parent_task_ref` = `root_task_ref` = the root's id). `tasks.prompt_text` non-null count: 0. This also closes the pending live check of the child role.
+

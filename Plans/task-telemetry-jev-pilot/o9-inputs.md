@@ -10,6 +10,9 @@ Collected 2026-09-28 for `/new-plan` of O9. Working rules for that plan: Hermes 
 
 Already covered: #1, #3 and #5 are done; #4 and #6 are done in O10.
 
+## Sources
+PA's decisions D8, D9 and D10 and the O9 priority order are in `Projects/PossibleSkills/SISTEM-TASARIMI.md` and the D8 draft. A new PA session is the counterpart for O9 (the old one closed on 2026-09-28).
+
 ## D8 contract
 `Projects/PossibleSkills/D8-ortak-olay-sozlesmesi-taslak.md` (owner: PA). Two points were agreed:
 - §1: the real repository name;
