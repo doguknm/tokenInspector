@@ -26,9 +26,9 @@ _Tool / model / skill per step come from the execution plan above. Claude steps 
 | Lane | Tool (model, skill) | Status | Notes |
 |---|---|---|---|
 | database | out of scope | not applicable | No schema change; the skip reason uses `task_evaluations.error_type` |
-| backend | Claude Code (Opus 5.5, direct) | in progress — Part A (A1–A5) done 2026-09-28, local suite green; Part B next | Part A (A1–A5) then Part B (B1–B4) per backend.md. No prod flag, deploy, plugin install or gateway restart without user approval |
+| backend | Claude Code (Opus 5.5, direct) | done 2026-09-28 — Part A `efb72ef`, Part B plugin `2844f39`; pushed to `hermes` | Part A (A1–A5) then Part B (B1–B4) per backend.md. No prod flag, deploy, plugin install or gateway restart without user approval |
 | frontend | out of scope | not applicable | No UI change |
-| tests-other | Claude Code (Opus 5.5, direct) | in progress — existing backend tests adapted to the allowed path (fixtures only) | Written with each backend step; mutation checks PM1–PM24, BM1–BM19, SM1–SM7 with exact sites and isolated fixtures (AC18). Plugin suite runs locally **and** on hermes (temp clone of the pushed branch) |
+| tests-other | Claude Code (Opus 5.5, direct) | done 2026-09-28 — backend tests `964d801`, plugin tests `cdc3387`; mutations 50/50 caught (see Verification Log); `test_docs_allowlist.py` deferred to maintenance-docs (Drift Log) | Written with each backend step; mutation checks PM1–PM24, BM1–BM19, SM1–SM7 with exact sites and isolated fixtures (AC18). Plugin suite runs locally **and** on hermes (temp clone of the pushed branch) |
 | tests-e2e | out of scope | not applicable | |
 | maintenance-docs | Claude Code (Opus 5.5, direct) | not started | backend.md "Documentation" (AC13). Must be done before the Hermes code review |
 | hermes plan review | Hermes (driven by Claude Code) | done — r1 17/17 fixed, r2 10/10 fixed; plan locked | Max 2 rounds reached; no round 3 |
@@ -39,6 +39,14 @@ _Tool / model / skill per step come from the execution plan above. Claude steps 
 _Append here when any lane discovers the spec is wrong. Do not edit lane files mid-flight._
 
 - 2026-09-27 — **Plan locked** after Hermes plan review r2 (root-only simplification applied to the summary, backend.md and tests-other.md). No drift recorded yet; from now on every spec change goes through this log, not through a lane-file edit.
+- 2026-09-28 — README: only the two A5 code blocks (`push_token_event`, "Batch ingest") changed in Part A (orchestrator-approved scope); every other README change stays in the maintenance-docs step.
+- 2026-09-28 — `tests/test_docs_allowlist.py` (AC13 literal check) is **not written yet**: it can only pass after the maintenance-docs step, so it moves to that step.
+- 2026-09-28 — BM9 (JEV entry gate, planned as *redundant*) was **caught**, not survived: the entry gate decides the reported reason (`project_not_allowed` before `already_scored`) and `test_pre_attempt_gate_is_skipped` isolates the loop gate by opening the first gate call. Recorded as caught.
+- 2026-09-28 — Child-transition null (A2.7): the nulled row is overwritten in place with `secure_delete`, but the earlier WAL frame that held the prompt stays until the next checkpoint (SQLite auto-checkpoint or the retention loop's TRUNCATE). `test_prompt_nulled_when_task_becomes_child` checkpoints before its DB/WAL byte assertion. Same class as the R7 local residual; flagged for the code review.
+- 2026-09-28 — F14 nuance: `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters, so they appear in the **aiosqlite DEBUG** driver log (off in production; the same driver logs every SQL parameter at DEBUG). Application logs never carry them; `test_allowlist_config_boundary` filters driver loggers. Flagged for the code review.
+- 2026-09-28 — Safe client: a dict that already carries the backend alias `event_id` keeps it (no generated `client_event_id` that would override the alias). Small addition to A5.5 ("a caller-provided id is never changed").
+- 2026-09-28 — Test layout: the plugin probe test `test_probe_not_ready_when_backend_reports_no_allowed_projects` lives in plugin `tests/test_prompt_allowlist.py` (not `test_capture_0c.py`); `test_session_discriminator_fixed_categories` is split into `..._fixed_categories` and `..._free_text_becomes_other`. `_hooks` also defaults `auto_project=False` and `emit_session_events=False` so the event lists stay deterministic.
+- 2026-09-28 — Hermes runs: backend suite ran in a temp worktree with the existing `~/Projects/tokenInspector/.venv` (Python 3.12.3), the plugin suite with the same venv **and** with the Hermes runtime venv (Python 3.11.15), instead of a fresh 3.13 venv. The browser suite is skipped on hermes (no Playwright there).
 
 ## Hermes Reviews
 _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/prompt-allowlist-safe-producer/hermes/._
@@ -177,3 +185,65 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 ## Verification Log
 | Date | Check | Result |
 |---|---|---|
+| 2026-09-28 | B3.3 hook order on hermes (read-only, `~/.hermes/hermes-agent` @ `5646fed`) | `on_session_start` fires once for a brand-new session in `agent/conversation_loop.py` (first-turn system-prompt build, not on continuation) before the first API call; `subagent_start` fires in `tools/delegate_tool.py` while the child agent is built, i.e. **before** the child's own first turn (whose `on_session_start` then finds it in `_subagent_state` and records no root). Continuing sessions after a gateway restart get no `on_session_start` → `unknown` → no prompt (R7, fail-closed) |
+| 2026-09-28 | Backend local (Windows) | `python -m pytest -q` → **262 passed** (incl. browser 16; baseline 208); `py_compile *.py routes/*.py scripts/*.py` ok; `node --check static/app.js` ok; `git diff --check` clean |
+| 2026-09-28 | Backend on hermes (temp worktree `/tmp/o10-test` @ `964d801`, removed after) | **246 passed, 1 skipped** (browser module skipped: no Playwright) |
+| 2026-09-28 | Plugin local (Windows) | **151 passed, 2 skipped** (POSIX permissions; `os.symlink` unavailable) — baseline 92 |
+| 2026-09-28 | Plugin on hermes (temp worktree @ `cdc3387`, removed after) | Python 3.12.3: **153 passed**; Hermes runtime Python 3.11.15: **153 passed** (symlink test runs there) |
+| 2026-09-28 | Existing tests touched (fixture only, no assertion relaxed) | Backend: `conftest.py` (pops `TASK_PROMPT_ALLOWED_PROJECTS`), `test_security_meta.py` (valid config lists `hermes`; preflight body gains the new key `task_prompt_allowlist: "configured"` — the only changed expectation; the flags-off error test sets the list so its exact set stays), `test_retention.py` (`_state` lists `hermes`), `test_task_ingest.py` + `test_review_r1.py` (capture on lists `hermes`, prompt events carry `task_hierarchy="root"` + marker; JEV rows are `root`), `test_jev_worker.py` (list `hermes`, rows `root`). Plugin: `test_capture_0c.py` (`_hooks` with allowlist/deny/cwd stub/registry reset, `_start`, `_child`; the 0c prompt test calls `_start`), `test_hooks_sink.py` + `test_response_mapping.py` (sink doubles accept `prompt_authorized`), `test_review_r1.py` + `test_spool.py` (listed project, marker / authorization) |
+| 2026-09-28 | Mutation checks (AC18), one at a time, file restored after each | **50/50 caught** — see table below |
+
+Mutation results (backend and safe client local; plugin local **and** on hermes, where PM9's symlink test runs):
+
+| # | Result | Failing test(s) |
+|---|---|---|
+| BM1 | caught | `test_not_listed_project_prompt_is_stripped`, `test_worker_skips_not_allowed_project_without_provider_call` |
+| BM2 | caught | `test_prompt_without_marker_is_not_stored` (3), `test_old_plugin_payload_cannot_store_prompt` |
+| BM3 | caught | `test_child_never_stores_prompt`, `test_worker_skips_non_root_tasks` |
+| BM4 | caught | `test_proven_root_required` |
+| BM5 | caught | `test_proven_root_required`, `test_worker_skips_non_root_tasks` |
+| BM6 | caught | `test_prompt_nulled_when_task_becomes_child` (both variants) |
+| BM7 | caught | `test_gate_rechecked_before_every_attempt` (remove, child), `test_pre_attempt_gate_is_skipped` |
+| BM8 | caught | `test_gate_rechecked_before_every_attempt` (remove, child) |
+| BM9 | caught (planned redundant) | `test_pre_attempt_gate_is_skipped`, `test_removing_project_blocks_stored_tasks_without_purge` — see Drift Log |
+| BM10 | caught | `test_evaluate_endpoint_reports_project_not_allowed` |
+| BM11 | caught | `test_empty_allowlist_disables_capture_with_reason` |
+| BM12 | caught | `test_empty_allowlist_contract_by_flags` |
+| BM13 | caught | `test_invalid_entries_dropped_without_count`, `test_allowlist_config_boundary` |
+| BM14 | caught | `test_meta_reports_allowlist_state_without_names` |
+| BM15 | caught | `test_tasks_allowed_only_filters_and_needs_auth` |
+| BM16 | caught | `test_tasks_allowed_only_filters_and_needs_auth` |
+| BM17 | caught | `test_select_requests_allowed_only` |
+| BM18 | caught | `test_validation_errors_never_echo_prompt` |
+| BM19 | caught | `test_validation_errors_never_echo_prompt` |
+| SM1 | caught | `test_loss_counters_sum_to_every_lost_event` |
+| SM2 | caught | `test_ack_validator_rejects_impossible_acks` (4 cases) |
+| SM3 | caught | `test_sensitive_fields_refused_or_stripped` |
+| SM4 | caught | `test_client_event_id_is_stable_uuid4` |
+| SM5 | caught | `test_idless_dict_resent_inserts_once` |
+| SM6 | caught | `test_close_cancels_and_counts` |
+| SM7 | caught | `test_readme_helper_contract` |
+| PM1 | caught | `test_allowed_project_carries_prompt_for_every_source` (7 unlisted cases) |
+| PM2 | caught | `test_empty_allowlist_sends_no_prompt_anywhere` (4) |
+| PM3 | caught | `test_child_never_carries_prompt`, `test_lineage_requires_positive_evidence` |
+| PM4 | caught | `test_lineage_requires_positive_evidence` |
+| PM5 | caught | `test_child_never_carries_prompt` |
+| PM6 | caught | `test_reset_session_id_reuse_is_unknown` |
+| PM7 | caught | `test_devir_clone_is_denied_even_when_slug_allowed` (root, subdir) |
+| PM8 | caught | `test_devir_clone_is_denied_even_when_slug_allowed` (subdir) |
+| PM9 | caught on hermes (survives on Windows only because the symlink test skips there) | `test_symlinked_paths_match_after_resolve` |
+| PM10 | caught | `test_empty_or_failing_candidates_deny_through_hooks` (empty, agent_import, getcwd, resolve; the `expanduser` case is denied inside `path_denied` itself) |
+| PM11 | caught | `test_denied_is_sticky_for_the_session` |
+| PM12 | caught | `test_emit_requires_attach_authorization` |
+| PM13 | caught | `test_emit_requires_attach_authorization` |
+| PM14 | caught | `test_emit_gate_strips_prompt_of_unlisted_project` |
+| PM15 | caught | `test_late_subagent_start_strips_pending_and_spooled_prompt` |
+| PM16 | caught | `test_late_subagent_start_strips_pending_and_spooled_prompt` |
+| PM17 | caught | `test_late_subagent_start_strips_pending_and_spooled_prompt` |
+| PM18 | caught | `test_replay_strips_revoked_session` |
+| PM19 | caught | `test_replay_strips_prompt_of_no_longer_allowed_project` (removed) |
+| PM20 | caught | `test_legacy_spool_without_marker_is_stripped` |
+| PM21 | caught | `test_allowlist_entries_are_strictly_normalized` |
+| PM22 | caught | `test_llm_error_has_no_error_message`, `test_no_error_message_on_any_event_path` |
+| PM23 | caught | `test_error_type_is_identifier_or_other` (3) |
+| PM24 | caught | `test_session_discriminator_free_text_becomes_other` (2) |
