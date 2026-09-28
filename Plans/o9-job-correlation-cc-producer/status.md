@@ -1,7 +1,7 @@
 # Status — O9: job correlation, cross-project child fix, Claude Code producer and a versioned read-only export
 
 **Started**: 2026-09-28
-**Last updated**: 2026-09-28 (plan LOCKED after hermes plan review r1; changes from here go to the Drift Log)
+**Last updated**: 2026-09-28 (Phase 1 checkpoint: backend `e1cab32`, plugin `6b79ec9`; next Phase 2)
 **Plan base commits**: backend PLAN_BASE = `904dec2` (backend HEAD at plan lock; the code diff excludes `Plans/`); plugin `4b069b4` (both on `feat/task-telemetry-jev-pilot`)
 **Phases**: 1 = job correlation + cross-project child fix · 2 = Claude Code producer + dedup authority · 3 = versioned read-only export. Each phase ends at a checkpoint (commit + push in the repos it touched — never a deploy). Hermes code review and the Claude integration review run once, at the end; the single prod deploy follows them, with user approval (O1).
 
@@ -39,11 +39,11 @@ _Tool / model / skill per step come from the execution plan chosen at /new-plan 
 
 | Lane | Tool (model, skill) | Status | Notes |
 |---|---|---|---|
-| database | Claude Code (Opus 5.5, direct) | not started | v11 in Phase 1 (`tasks.job_ref`, `job_ref_conflicts`), v12 in Phase 3 (`token_events.ingest_seq`). Backend repo only |
-| backend | Claude Code (Opus 5.5, direct) | not started | Phase 1: J0 gate (AC1.1) first, then J1–J9 in backend + plugin repos; Phase 2: C0 gate (AC2.1) first, then C1–C11 in the backend repo; Phase 3: X1–X6. Shared files only via S1–S5 (SESSION-COORDINATION) |
-| frontend | Claude Code (Opus 5.5, direct, frontend-design) | not started | Phase 1 Jobs view (AC1.6); Phase 3 Export panel (AC3.1, AC3.9). No Phase 2 work |
-| tests-other | Claude Code (Opus 5.5, direct) | not started | Written with each backend step; mutation checks PJ*/BJ* (Phase 1), CM* (Phase 2), XM* (Phase 3). Suites locally and on hermes at every checkpoint |
-| tests-e2e | Claude Code (Opus 5.5, direct) | not started | Playwright `-m browser`, own module-scoped servers; Phase 1 Jobs view, Phase 3 CSV download; mutations FM1–FM3. Run after the frontend work of the phase |
+| database | Claude Code (Opus 5.5, direct) | Phase 1 done (`e1cab32` / plugin `6b79ec9`) | v11 in Phase 1 (`tasks.job_ref`, `job_ref_conflicts`), v12 in Phase 3 (`token_events.ingest_seq`). Backend repo only |
+| backend | Claude Code (Opus 5.5, direct) | Phase 1 done (`e1cab32` / plugin `6b79ec9`) | Phase 1: J0 gate (AC1.1) first, then J1–J9 in backend + plugin repos; Phase 2: C0 gate (AC2.1) first, then C1–C11 in the backend repo; Phase 3: X1–X6. Shared files only via S1–S5 (SESSION-COORDINATION) |
+| frontend | Claude Code (Opus 5.5, direct, frontend-design) | Phase 1 done (`e1cab32` / plugin `6b79ec9`) | Phase 1 Jobs view (AC1.6); Phase 3 Export panel (AC3.1, AC3.9). No Phase 2 work |
+| tests-other | Claude Code (Opus 5.5, direct) | Phase 1 done (`e1cab32` / plugin `6b79ec9`) | Written with each backend step; mutation checks PJ*/BJ* (Phase 1), CM* (Phase 2), XM* (Phase 3). Suites locally and on hermes at every checkpoint |
+| tests-e2e | Claude Code (Opus 5.5, direct) | Phase 1 done (`e1cab32` / plugin `6b79ec9`) | Playwright `-m browser`, own module-scoped servers; Phase 1 Jobs view, Phase 3 CSV download; mutations FM1–FM3. Run after the frontend work of the phase |
 | hermes-review | Hermes (driven by Claude Code) | not started | After all three phases and tests-e2e, before review — spec in `## Hermes Code Review` (spec written at plan lock) |
 | review | Claude Code (Opus 5.5, direct) | not started | Run last — full integration review (AC → test map across both repos, cross-repo contracts: env contract, tag keys, `parent_project_name`, attribution vectors, `valid_ack`; Deploy Runbook review) |
 
@@ -52,7 +52,7 @@ _One row per phase. A phase is closed only when every column is filled. Mutation
 
 | Phase | Local suite (backend / plugin / browser) | Hermes suite (backend / plugin: venv py + Hermes runtime py) | Mutation results | Backend commit(s) | Plugin commit(s) | Pushed to `hermes` | Date |
 |---|---|---|---|---|---|---|---|
-| 1 — job correlation + cross-project fix | | | PJ1–PJ8, BJ1–BJ26, FM1, FM4, FM8 | | | | |
+| 1 — job correlation + cross-project fix | backend **388 passed** (incl. 26 browser) / plugin **196 passed, 2 skipped** | backend **347 passed, 16 skipped** (browser, no Playwright) / plugin **198 passed** on Python 3.12.3 and Hermes runtime 3.11.15 (temp worktrees, removed; prod checkouts on `main`) | PJ1–PJ8, BJ1–BJ26, FM1, FM4, FM8: **37/37 caught** | `e1cab32` | `6b79ec9` | yes (both; backend also `origin`) | 2026-09-28 |
 | 2 — Claude Code producer + dedup authority | | | CM1–CM37 | | attribution-vector runner + fixture (B-F16) | | |
 | 3 — versioned read-only export | | | XM1–XM25, FM2–FM3, FM5–FM7 | | — (no plugin change) | | |
 
@@ -62,6 +62,10 @@ A checkpoint is commit + push only; nothing is deployed, installed or restarted 
 _Append here when any lane discovers the spec is wrong. Do not edit lane files mid-flight. The J0 verdict, the J2 measured tag size and cap, and every C0 rule are recorded here as they are decided._
 
 - 2026-09-28 — Lane files written by the planner from the brief (incl. "Open questions resolved"). Planner decisions to confirm at the plan review: (1) task→job is a column on `tasks` (v11) so "a task belongs to at most one job" is enforceable, job context itself stays in tags; (2) the export snapshot uses a new `token_events.ingest_seq` (v12) because `recorded_at` is not commit-ordered and `rowid` is not VACUUM-stable; (3) CSV is built in the dashboard from the JSON export (no server CSV); (4) the Jobs view is a new nav view, the Export panel lives in it; (5) the env contract uses `TOKEN_INSPECTOR_JOB_REF` / `_WORK_TYPE` / `_JOB_ATTEMPT` and the skill passes `HERMES_WORK_TYPE` to `hermes.sh`; (6) CC producer modules are flat `cc_*.py` files so the hook runs as a plain script.
+- 2026-09-28 — **J0 verdict: YES** (`hermes -z` discovers plugins and builds its `AIAgent` in its own process; source trace in the Verification Log). Phase 1 continues as planned; no fallback needed.
+- 2026-09-28 — **J2 measurement:** worst-case plugin llm-event tags incl. the new keys = **17 keys, 722 bytes** (`tests/fixtures/worst_case_plugin_tags.json`, pinned by `test_worst_case_plugin_tags_accepted`); below the 768 B ask threshold, so `TAG_BYTES_MAX = 1024` (keys ≤ 20) as planned (O4 resolved).
+- 2026-09-28 — **Phase 1 checkpoint taken by the orchestrator:** the Phase 1 subagent was stopped four times (API session limit twice, network outage twice, then the session ended) before committing. The orchestrator verified that no mutation was left applied (all 36 runner `old` strings present), ran the suites, committed, ran the remaining mutations (BJ24, BJ25, FM1, FM4, FM8 via the runner; BJ26 by hand on a temp launcher copy) and the hermes suites. Plugin tests on hermes need the worktree directory to be named `token_inspector` (conftest imports the package by that name).
+- 2026-09-28 — **Note for Phase 2 (C9; not implemented in Phase 1):** PossibleSkills installs its `settings.json` hooks under an OS lock file `settings.json.lock-possibleskills` next to the settings file. The C9 installer should take the same lock for the whole `--apply` / `--uninstall --apply` (in addition to its unchanged-source hash check), so the two installers never write concurrently. Source: coordinator message 2026-09-28.
 
 ## Hermes Reviews
 _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-correlation-cc-producer/hermes/. This plan's brief sets 1 round for the plan and 1 for the code._
@@ -154,7 +158,7 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 | O1 | Resolved (user goal, 2026-09-28): deploy **once**, after the Claude integration review (as O10), with user approval. Live checks AC1.2, AC2.2, AC2.3 are recorded as "pending deploy" until then | — | Live AC checks |
 | O2 | J0 / AC1.1 gate: does `hermes -z` load plugins in its own process? **Stop-and-ask** if no, if the evidence is missing or inconclusive, or if a finding contradicts an AC (default proposal for "no": launcher-posted job→session mapping record) — never automatic drift | Claude (read-only), then user | Phase 1 J1+ |
 | O3 | C0 / AC2.1 gate: CC hook stdin fields, subagent layout, parent link and child id, streaming duplicates and finality rule, resumed copies, `<synthetic>` lines, error records, line sizes, in-place rewrites — rules into the Drift Log. **Stop-and-ask** when a fact lacks admissible evidence (backend.md C0) or contradicts an AC | Claude (read-only), then user | Phase 2 C1+ |
-| O4 | Tag byte cap value after the J2 measurement (default 1024, keys ≤ 20); ask if the measurement exceeds 768 B | Claude → orchestrator | J2 |
+| O4 | Resolved: J2 measured 17 keys / 722 B → cap 1024 B, keys ≤ 20 (Drift Log) | — | — |
 | O5 | Resolved (user, 2026-09-28): TI owns `AIFromScratch\scripts\hermes.sh` and `~/.claude/commands/hermes.md`; ledger rows added. TI edits them with a ledger line and a message to PossibleSkills | — | — |
 | O6 | Owner agreement for S2, S3 (PEGA `hermes.sh` copies), S4 (`/hermes` skill) and S5 (`~/.claude/settings.json` on both machines, coexisting with PossibleSkills' planned PreToolUse hook) | Owners / user | Phase 1 live, Phase 2 deploy |
 | O7 | Pricing rules or aliases for the Claude models Claude Code uses; until added they stay `unpriced` (never zero). Fix through the settings API + recost dry-run, not code | User | Complete CC cost |
@@ -168,8 +172,9 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 ## Verification Log
 | Date | Check | Result |
 |---|---|---|
+| 2026-09-28 | **J0 / AC1.1 gate** — does `hermes -z` load plugins in its own process? Read-only source trace on hermes, installed Hermes Agent `~/.hermes/hermes-agent` @ `5646fed97eac67c5ec5b21e5c491309d8c97639d` (3 unrelated local modifications: `hermes_cli/cron.py`, `hermes_cli/subcommands/cron.py`, `package-lock.json`). No job run, nothing installed or changed, no content copied | **Verdict: YES.** `~/.local/bin/hermes` execs the venv python on `hermes` (entry) → `hermes_cli/main.py` `main()`: `-z` parses with `args.command = None`, which is in `_AGENT_COMMANDS = {None, "chat", "acp", "rl"}`, so `_prepare_agent_startup(args)` calls `hermes_cli.plugins.discover_plugins()` in this process (skipped only with `HERMES_SAFE_MODE` / `--safe-mode`, which `hermes.sh` never sets) → `_run_and_exit_oneshot` → `hermes_cli/oneshot.py` `run_oneshot` builds `run_agent.AIAgent(... platform="cli")` locally ("Bypasses cli.py entirely"; no gateway hand-off) → `agent/conversation_loop.py` calls `hermes_cli.plugins.has_hook/invoke_hook("pre_api_request" / "post_api_request" / "on_session_start")` on the process-global `get_plugin_manager()`; subagents (`tools/delegate_tool.py`, `subagent_start`) run in a `ThreadPoolExecutor` of the same process. Plugin enablement comes from `~/.hermes/config.yaml` `plugins.enabled: [token_inspector]`, read by that process. So env vars exported by the runner before `$AGENT -z` are in `os.environ` of the process whose plugin builds the events → proceed with J1 |
 | — | AC1.2 live (AIFromScratch `hermes.sh` review job) | pending deploy |
-| — | AC1.2 PEGADocRag `send` / PEGADocRagAgent `send` (synthetic `test_launcher_env_contract` per copy; live on first real run) | pending (synthetic before review; live pending deploy) |
+| 2026-09-28 | AC1.2 launcher env contract, synthetic (`test_launcher_env_contract`: S1 real file; S2/S3 = owners' files with the O9 patch applied to a temp copy) | **14 passed**; live runs pending deploy (S2/S3 also pending the owners applying the patches) |
 | — | AC2.2 live (Windows Claude Code turn) | pending deploy |
 | — | AC2.3 live (devir run, `devir-baslat`) | pending deploy |
 
@@ -177,3 +182,40 @@ Mutation checks (one mutation at a time: break the control → named test red �
 
 | # | Phase | Control | Result | Failing test(s) |
 |---|---|---|---|---|
+| PJ1 | 1 | `job.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_job_env_invalid_job_ref_dropped`, `test_plugin_payload_sentinel` |
+| PJ2 | 1 | `job.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_job_env_invalid_work_type_dropped` |
+| PJ3 | 1 | `job.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_llm_event_carries_job_tags` |
+| PJ4 | 1 | `mapping.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_llm_event_carries_job_tags` |
+| PJ5 | 1 | `job.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_job_env_read_once_per_process` |
+| PJ6 | 1 | `__init__.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_child_event_carries_parent_project_name` |
+| PJ7 | 1 | `__init__.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_invalid_parent_project_not_sent` |
+| PJ8 | 1 | `job.py` — plugin job/parent tags control | caught (red → reverted → green) | `test_job_env_invalid_job_ref_dropped` |
+| BJ1 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_reserved_keys_normalization` |
+| BJ2 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_reserved_keys_normalization` |
+| BJ3 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_reserved_keys_normalization` |
+| BJ4 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_reserved_keys_normalization` |
+| BJ5 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_reserved_keys_never_reject` |
+| BJ6 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_worst_case_plugin_tags_accepted` |
+| BJ7 | 1 | `task_store.py` — backend control | caught (red → reverted → green) | `test_task_gets_first_job`, `test_task_belongs_to_one_job` |
+| BJ8 | 1 | `task_store.py` — backend control | caught (red → reverted → green) | `test_task_gets_first_job` |
+| BJ9 | 1 | `routes/jobs.py` — backend control | caught (red → reverted → green) | `test_job_cost_semantics` |
+| BJ10 | 1 | `routes/jobs.py` — backend control | caught (red → reverted → green) | `test_job_cost_semantics` |
+| BJ11 | 1 | `routes/jobs.py` — backend control | caught (red → reverted → green) | `test_jobs_exclude_evaluator` |
+| BJ12 | 1 | `routes/jobs.py` — backend control | caught (red → reverted → green) | `test_task_belongs_to_one_job` |
+| BJ13 | 1 | `task_store.py` — backend control | caught (red → reverted → green) | `test_cross_project_child_parent_ref` |
+| BJ14 | 1 | `task_store.py` — backend control | caught (red → reverted → green) | `test_cross_project_child_either_order` |
+| BJ15 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_invalid_parent_project_name_keeps_today_behaviour` |
+| BJ16 | 1 | `scripts/repair_task_parents.py` — backend control | caught (red → reverted → green) | `test_repair_dry_run_by_default` |
+| BJ17 | 1 | `scripts/repair_task_parents.py` — backend control | caught (red → reverted → green) | `test_repair_backs_up_before_apply` |
+| BJ18 | 1 | `scripts/repair_task_parents.py` — backend control | caught (red → reverted → green) | `test_repair_apply_relinks_and_reroots` |
+| BJ19 | 1 | `routes/events.py` — backend control | caught (red → reverted → green) | `test_reserved_keys_normalization`, `test_jobs_exclude_invalid_attribution` |
+| BJ20 | 1 | `routes/jobs.py` — backend control | caught (red → reverted → green) | `test_conflicts_events_vs_tasks` |
+| BJ21 | 1 | `routes/jobs.py` — backend control | caught (red → reverted → green) | `test_jobs_filters_select_whole_jobs` |
+| BJ22 | 1 | `scripts/repair_task_parents.py` — backend control | caught (red → reverted → green) | `test_repair_revalidates_under_write_lock` |
+| BJ23 | 1 | `scripts/repair_task_parents.py` — backend control | caught (red → reverted → green) | `test_repair_graph_cases` |
+| BJ24 | 1 | `scripts/repair_task_parents.py` — backend control | caught (red → reverted → green) | `test_repair_backup_verified_during_ingest` |
+| BJ25 | 1 | `migrations.py` — backend control | caught (red → reverted → green) | `test_cc_client_event_unique_across_projects` |
+| FM1 | 1 | `static/app.js` — Jobs view control | caught (red → reverted → green) | `test_jobs_unpriced_never_zero` |
+| FM4 | 1 | `static/app.js` — Jobs view control | caught (red → reverted → green) | `test_jobs_latest_request_wins` |
+| FM8 | 1 | `static/app.js` — Jobs view control | caught (red → reverted → green) | `test_jobs_conflict_counts` |
+| BJ26 | 1 | `hermes.sh` S1 (temp copy via `O9_LAUNCHER_ROOT`): work-type check removed | caught (2 S1 cases red; original 14/14 green) | `test_launcher_drops_invalid_work_type_and_attempt` |

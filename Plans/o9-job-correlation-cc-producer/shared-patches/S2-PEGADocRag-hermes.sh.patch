@@ -1,0 +1,31 @@
+--- a/scripts/hermes.sh
++++ b/scripts/hermes.sh
+@@ -104,17 +104,27 @@
+   fi
+ 
+   job_paths "$(date +%Y%m%d-%H%M%S)-$$"
++  # Job context for Token Inspector (O9): env only. The plugin loaded by `hermes -z` reads it; the
++  # work type comes from the /hermes skill and is kept only if it is a short lowercase word, the
++  # attempt only if it is 1-9999.
++  WT="${HERMES_WORK_TYPE:-}"; ATT="${HERMES_JOB_ATTEMPT:-}"
++  [[ "$WT" =~ ^[a-z0-9]{1,16}$ ]] || WT=""
++  [[ "$ATT" =~ ^[1-9][0-9]{0,3}$ ]] || ATT=""
++  jobenv="export TOKEN_INSPECTOR_JOB_REF=$JOB"
++  [ -n "$WT" ] && jobenv="$jobenv TOKEN_INSPECTOR_WORK_TYPE=$WT"
++  [ -n "$ATT" ] && jobenv="$jobenv TOKEN_INSPECTOR_JOB_ATTEMPT=$ATT"
+   "$SCP_BIN" -q "${SSHOPT[@]}" "$file" "$HOST:$PROMPT"
+   # The runner is written remotely so nothing depends on this shell's quoting.
+   sshq "cat > $RUNNER <<'EOS'
+ #!/bin/bash
+ cd $REPO || exit 1
+ echo \$\$ > $PIDF
++__JOBENV__
+ $AGENT -z \"\$(cat $PROMPT)\" __MODEL__ > $LOG 2>&1
+ echo \"__EXIT__=\$?\" >> $LOG
+ rm -f $PIDF
+ EOS
+-sed -i 's|__MODEL__|$modelarg|' $RUNNER
++sed -i 's|__MODEL__|$modelarg|; s|__JOBENV__|$jobenv|' $RUNNER
+ chmod +x $RUNNER
+ setsid nohup $RUNNER </dev/null >/dev/null 2>&1 &
+ sleep 2
