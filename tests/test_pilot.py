@@ -269,3 +269,26 @@ def test_score_exits_non_zero_when_deferred(tmp_path, capsys, request_time):
     args = SimpleNamespace(sample=str(_sample_file(tmp_path, ["r1"])), labeler="ann", allow_unlabelled=False)
     assert jev_pilot.cmd_score(DeferringApi(details, request_time), args, wait=lambda s: None) == 3
     assert "2026-09-27T13:0" in capsys.readouterr().err
+
+
+# --- O10 Q3: select asks only for allowlisted projects ------------------------------------------------
+
+
+def test_select_requests_allowed_only():
+    import httpx
+
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        page = int(request.url.params["page"])
+        return httpx.Response(200, json={"items": [{"task_ref": f"r{page}"}], "total": 2, "page_size": 1})
+
+    client = httpx.Client(base_url="http://pilot.test", transport=httpx.MockTransport(handler))
+    items = jev_pilot.Api("http://pilot.test", "tok-123", client=client).all_root_tasks()
+    assert [i["task_ref"] for i in items] == ["r1", "r2"]
+    assert len(seen) == 2
+    for request in seen:
+        assert request.url.path == "/api/tasks"
+        assert request.url.params["allowed_only"] == "true" and request.url.params["root_only"] == "true"
+        assert request.headers["X-Ingest-Token"] == "tok-123"
