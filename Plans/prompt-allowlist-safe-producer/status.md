@@ -1,7 +1,7 @@
 # Status — Per-project prompt/JEV allowlist with clone path-deny, and a safe producer example (O10)
 
 **Started**: 2026-09-27
-**Last updated**: 2026-09-28 (implementation and maintenance-docs done; O10 docs done, resolution pending final review)
+**Last updated**: 2026-09-28 (Hermes code review r1 done, all 12 findings fixed; O10 resolution pending the final review)
 **Plan base commits**: backend `3f52fe1`, plugin `f19ffd2` (both on `feat/task-telemetry-jev-pilot`)
 **Closes**: O10 in `Plans/task-telemetry-jev-pilot/status.md` (blocks that plan's Activation Gate). O10 is marked resolved only after the final review lane passes, including the AC13 semantic checklist; the maintenance-docs step only records "docs done, pending final review" (F17)
 
@@ -32,7 +32,7 @@ _Tool / model / skill per step come from the execution plan above. Claude steps 
 | tests-e2e | out of scope | not applicable | |
 | maintenance-docs | Claude Code (Opus 5.5, direct) | done 2026-09-28 — README, AGENTS.md, CLAUDE.md (RP 9 four gates, new RP 13 WAL residual, RP 14 allowed-path test fixtures), CHANGELOG, ARCHITECTURE.md, ADR-002 §6, pilot status.md (Activation Gate (a) item + (c)-1, O9 hand-off rule, O10 "docs done, resolution pending final review"), plugin README; `tests/test_docs_allowlist.py` green. CONTRIBUTING.md and `.github/workflows/ci.yml`: no change needed (new tests run in the existing job) | backend.md "Documentation" (AC13). Must be done before the Hermes code review |
 | hermes plan review | Hermes (driven by Claude Code) | done — r1 17/17 fixed, r2 10/10 fixed; plan locked | Max 2 rounds reached; no round 3 |
-| hermes-review (code) | Hermes (driven by Claude Code) | not started | After tests-other and maintenance-docs, before review — spec in `## Hermes Code Review` |
+| hermes-review (code) | Hermes (driven by Claude Code) | done 2026-09-28 — r1 (single round by orchestrator decision): 12 findings, all fixed (backend `fcaa317`, plugin `65104cb`) | After tests-other and maintenance-docs, before review — spec in `## Hermes Code Review` |
 | review | Claude Code (Opus 5.5, direct) | not started | Run last — full integration review (AC → test map, cross-repo contracts, `ac13_semantic_checklist`, `runbook_review`); on pass, marks O10 resolved |
 
 ## Drift Log
@@ -46,6 +46,8 @@ _Append here when any lane discovers the spec is wrong. Do not edit lane files m
 - 2026-09-28 — F14 nuance: `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters, so they appear in the **aiosqlite DEBUG** driver log (off in production; the same driver logs every SQL parameter at DEBUG). Application logs never carry them; `test_allowlist_config_boundary` filters driver loggers. Flagged for the code review.
 - 2026-09-28 — Safe client: a dict that already carries the backend alias `event_id` keeps it (no generated `client_event_id` that would override the alias). Small addition to A5.5 ("a caller-provided id is never changed").
 - 2026-09-28 — Test layout: the plugin probe test `test_probe_not_ready_when_backend_reports_no_allowed_projects` lives in plugin `tests/test_prompt_allowlist.py` (not `test_capture_0c.py`); `test_session_discriminator_fixed_categories` is split into `..._fixed_categories` and `..._free_text_becomes_other`. `_hooks` also defaults `auto_project=False` and `emit_session_events=False` so the event lists stay deterministic.
+- 2026-09-28 — code-r1 P1 F1: JEV now also requires a completed turn (new skip reason `task_not_completed`), extending AC8. Decided by the orchestrator on Hermes' recommendation; recorded here because AC8 named only `project_not_allowed`.
+- 2026-09-28 — code-r1 P3 F2: the plugin's revocation set is no longer a `BoundedTTLMap` (B3.7 said 2048 / 86400 s); it is a plain set kept for the process lifetime, and overflow switches to strip-everything.
 - 2026-09-28 — Hermes runs: backend suite ran in a temp worktree with the existing `~/Projects/tokenInspector/.venv` (Python 3.12.3), the plugin suite with the same venv **and** with the Hermes runtime venv (Python 3.11.15), instead of a fresh 3.13 venv. The browser suite is skipped on hermes (no Playwright there).
 
 ## Hermes Reviews
@@ -55,10 +57,24 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/prompt-al
 |---|---|---|---|---|---|---|
 | plan | r1 | 2026-09-27 | 17 (2 BLOCKER, 10 HIGH, 5 MEDIUM) | 17 | 0 | 0 |
 | plan | r2 | 2026-09-27 | 10 (1 BLOCKER, 6 HIGH, 3 MEDIUM) | 10 (5 by root-only simplification) | 0 | 0 |
+| code | r1 | 2026-09-28 | 12 (4 HIGH, 8 MEDIUM) in 3 parts | 12 | 0 | 0 |
 
 - plan r1: raw report `hermes/prompt-allowlist-safe-producer-plan-r1.md`; user decisions and fixes `hermes/plan-r1-triage.md` (all 17 fixed in the summary, backend.md and tests-other.md).
 - plan r2: raw report `hermes/prompt-allowlist-safe-producer-plan-r2.md`; user decisions `hermes/plan-r2-triage.md`. Design simplification: prompts only for proven root tasks, child sessions never carry one (resolves F1, F3, F4, F5, F7 at the root); F2, F6, F8, F9, F10 fixed directly; F6 clarified with the user (proven root allows `root_task_ref` NULL or equal to its own id). Where each lands: F1 → AC7/AC16, backend.md A2.7 + B3.7; F2 → AC17, B3.5–B3.6; F3/F4/F5/F7 → AC4/AC7 "resolved by root-only rule" notes; F6 → AC7/AC8, A2.2 + A3.1; F8 → AC8, A3.2; F9 → AC18, tests-other `## Mutation checks`; F10 → AC9, A1.1.
 - Plan locked after r2 — no round 3; verified by tests and mutation checks.
+- code r1: raw reports `hermes/prompt-allowlist-safe-producer-code-r1-p1.md` (backend code + docs), `-p2.md` (backend tests), `-p3.md` (plugin). Orchestrator decision: Hermes' recommendations take priority, all 12 applied, **no round 2**; each fix verified by a test and, where it adds a control, by a mutation (Verification Log).
+  - P1 F1 HIGH late-child JEV send window — fixed `fcaa317`: JEV scores only completed turns (`session_end`/`next_task`/inferred after 60 min), checked with the proven-root rule before every attempt (`task_not_completed`); ADR-002 §6 explains why completion closes the window and R7 no longer claims the root check alone prevents a send.
+  - P1 F2 MEDIUM gate after retention check — fixed `fcaa317`: `project_gate` runs before the per-attempt retention checks; test with a real ingest child transition between attempts.
+  - P1 F3 MEDIUM enqueue validation ≠ wire encoding — fixed `fcaa317`: `allow_nan=False` + UTF-8 like httpx; invalid events are `serialization_failed`, valid neighbours are sent.
+  - P1 F4 MEDIUM README batch example — fixed `fcaa317`: `post_batch()` counts rejected as lost, malformed ack as unconfirmed, non-2xx as lost; exec-tested; the AC12 helper test stays green.
+  - P2 F1 MEDIUM dataclass `task_prompt_text` — fixed `fcaa317`: refusal asserted, plus a subclass that re-adds the fields is stripped.
+  - P2 F2 MEDIUM budget ledger not asserted — fixed `fcaa317`: zero-attempt skips assert no attempts and zero spend; one-attempt stops assert one completed attempt, matching spend and `http_attempts`/`cost_usd`.
+  - P2 F3 MEDIUM fallback without control — fixed `fcaa317`: a no-change case with the same 429 reaches digitalocean and succeeds.
+  - P2 F4 MEDIUM marker only via `/api/events` — fixed `fcaa317`: missing/invalid-marker and old-plugin cases run on both endpoints with DB/WAL absence and a marked control.
+  - P3 F1 HIGH revocation checked once per batch — fixed `65104cb`: re-read in `_post` before every HTTP call and before `_keep`/dead-letter; tests revoke B during A's POST and during a failing POST.
+  - P3 F2 HIGH bounded revocation evidence — fixed `65104cb`: revoked ids kept for the process lifetime (no TTL/eviction); overflow beyond 2048 sets fail-closed mode that strips every prompt in memory, queue and spool; overflow test.
+  - P3 F3 HIGH denial evicted independently of root — fixed `65104cb`: denial pops the root evidence and `on_session_start` does not re-root a denied session; independent-map eviction test.
+  - P3 F4 MEDIUM legacy replay sends `error_message` — fixed `65104cb`: removed at the common transmission boundary (`_post`), replay included; legacy envelope test.
 
 ## Hermes Code Review
 **Hermes code review** of **Per-project prompt/JEV allowlist with clone path-deny, and a safe producer example (O10)**. Run it after the implementation lanes. Hermes reviews; Claude drives the review, triages every finding with the user and applies only the approved fixes. Hermes writes no code and changes no file.
@@ -193,6 +209,29 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 | 2026-09-28 | Existing tests touched (fixture only, no assertion relaxed) | Backend: `conftest.py` (pops `TASK_PROMPT_ALLOWED_PROJECTS`), `test_security_meta.py` (valid config lists `hermes`; preflight body gains the new key `task_prompt_allowlist: "configured"` — the only changed expectation; the flags-off error test sets the list so its exact set stays), `test_retention.py` (`_state` lists `hermes`), `test_task_ingest.py` + `test_review_r1.py` (capture on lists `hermes`, prompt events carry `task_hierarchy="root"` + marker; JEV rows are `root`), `test_jev_worker.py` (list `hermes`, rows `root`). Plugin: `test_capture_0c.py` (`_hooks` with allowlist/deny/cwd stub/registry reset, `_start`, `_child`; the 0c prompt test calls `_start`), `test_hooks_sink.py` + `test_response_mapping.py` (sink doubles accept `prompt_authorized`), `test_review_r1.py` + `test_spool.py` (listed project, marker / authorization) |
 | 2026-09-28 | Mutation checks (AC18), one at a time, file restored after each | **50/50 caught** — see table below |
 | 2026-09-28 | maintenance-docs: local suites after the docs commit | backend **263 passed** (incl. `test_docs_allowlist.py` and browser 16); plugin **151 passed, 2 skipped**; py_compile / node --check / git diff --check clean |
+| 2026-09-28 | code-r1 fixes: local | backend **282 passed** (incl. browser 16); plugin **157 passed, 2 skipped**; py_compile / node --check / git diff --check clean |
+| 2026-09-28 | code-r1 fixes: hermes (temp worktrees @ `fcaa317` / `65104cb`, removed; prod checkouts stay on `main`) | backend **266 passed, 1 skipped** (browser module); plugin **159 passed** on Python 3.12.3 and on the Hermes runtime Python 3.11.15 |
+| 2026-09-28 | code-r1 fix mutations, one at a time, file restored after each | **15/15 caught** (RM6 first run was an equivalent mutation — fallback still reached through the cooldown branch — so RM6b disables both fallback paths) — table below |
+
+Code-r1 fix mutations:
+
+| # | Finding | Mutation | Result | Failing test(s) |
+|---|---|---|---|---|
+| RM1 | P1 F1 | `project_gate`: open turn returns None | caught | `test_only_completed_turns_are_scored` (open), `test_late_child_is_classified_before_the_turn_completes` |
+| RM2 | P1 F2 | gate moved back after the retention check | caught | `test_child_transition_between_attempts_reports_project_not_allowed` |
+| RM3 | P1 F3 | enqueue check back to plain `json.dumps` | caught | `test_wire_invalid_events_never_poison_a_batch` |
+| RM4 | P1 F4 | README: rejected counted as delivered | caught | `test_readme_batch_example_accounts_for_every_event` (2) |
+| RM5 | P1 F4 | README: malformed ack counted as delivered | caught | `test_readme_batch_example_accounts_for_every_event` (2) |
+| RM6 | P2 F3 | 429 branch keeps typesafe-ai | survived — equivalent (the cooldown branch still falls back) | — |
+| RM6b | P2 F3 | fallback disabled on both paths | caught | `test_gate_rechecked_before_fallback` (incl. the no-change control) |
+| RM7 | P2 F2 | 5xx attempt never completed (left `reserved`) | caught | `test_gate_rechecked_before_every_attempt` (remove, child) |
+| RM8 | P2 F4 | marker check removed (both endpoints) | caught | `test_prompt_without_marker_is_not_stored` (6), `test_old_plugin_payload_cannot_store_prompt` (2) |
+| QM1 | P3 F1 | no re-check in `_post` | caught | `test_revocation_rechecked_before_each_http_call` |
+| QM2 | P3 F1 | `_keep` without re-check | caught | `test_revocation_rechecked_before_retaining_a_failed_delivery[down]` |
+| QM3 | P3 F1 | dead-letter without re-check | caught | `test_revocation_rechecked_before_retaining_a_failed_delivery[reject]` |
+| QM4 | P3 F2 | overflow does not set fail-closed mode | caught | `test_revocation_overflow_fails_closed` |
+| QM5 | P3 F3 | denial keeps root evidence | caught | `test_denied_eviction_never_restores_root` |
+| QM6 | P3 F4 | `_NEVER_SENT = ()` | caught | `test_legacy_error_message_is_never_transmitted` |
 
 Mutation results (backend and safe client local; plugin local **and** on hermes, where PM9's symlink test runs):
 
