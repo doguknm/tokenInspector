@@ -103,7 +103,7 @@ Triage: `hermes/plan-r1-triage.md` and `hermes/plan-r2-triage.md`. Raw findings:
 Each r2 fix has an owned test in tests-other.md, marked `(r2 item N)`. The plan deliverable has used its 2 rounds; the next Hermes round is the **code** review (`code-r1`).
 | code | r1 | 2026-09-27 | 28 (6 parts: P1 4, P2 6, P3 3, P4 5, P5 4, P6 6) | 28 (C: 3 findings resolved by correcting the Drift Log wording to `child`) | 0 | 0 |
 
-Code review round 2 **not run — user decision 2026-09-27** ("2. tur review göndermeden devam et"). The round-1 fixes are verified by tests and mutation checks (Verification Log).
+Code review round 2 **not run — user decision 2026-09-27** ("go on without sending the round-2 review" (translated)). The round-1 fixes are verified by tests and mutation checks (Verification Log).
 
 ## Known Limitations
 _Review findings the user chose not to fix — one line each: `<plan|code>-review r<N> F<k>: <what> — <why accepted>`._

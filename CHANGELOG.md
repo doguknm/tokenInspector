@@ -26,6 +26,7 @@ All notable user-visible and operational changes are documented here.
 
 ### Changed
 
+- Docs translated to English: the last Turkish references in the O9 plan (`Plans/o9-job-correlation-cc-producer/`) and the project's Claude memory.
 - `token_inspector_client.py` and the README `push_token_event` helper are a safe producer example: token, batch-only, status and ack checks, loss/unconfirmed counters, stable `client_event_id`, no prompt or error text.
 - The Hermes plugin no longer sends `error_message`; it sends an identifier-shaped `error_type` and `http_status`. The backend still accepts `error_message` from older producers.
 - Validation errors (single 422 and batch items) no longer echo the rejected input.

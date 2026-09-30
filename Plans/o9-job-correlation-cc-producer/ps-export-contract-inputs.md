@@ -11,7 +11,7 @@ job 20260928-141024-960 (queue row 14). Input for PM round 2 (--finalize).
   plan. The only link is the versioned, read-only export (O9 #3); the export does not block
   PossibleSkills' delivery.
 - The consumer's minimum field list is also in
-  `Projects/PossibleSkills/Plans/toplayici-karar-defteri/plan.md`, section "TI export sözleşmesi".
+  `Projects/PossibleSkills/Plans/toplayici-karar-defteri/plan.md`, section "TI export contract".
 
 ## What the export contract must state (hermes gap list)
 - Coverage field: which runtimes the data covers (today only hermes-agent turns).

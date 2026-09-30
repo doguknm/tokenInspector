@@ -503,7 +503,7 @@ No value (URL, token) is ever written into repo files, plans or NotebookLM-bound
 
 ## Coordinated shared-file tasks
 
-Every item below changes a file outside both repos. Procedure for each: re-read `C:\Users\Bentego_Admin\.claude\SESSION-COORDINATION.md`; add a row to `## Değişiklik günlüğü` (time, `TI`, file, one-line summary) **before** applying; if the file has another owner (owner column of `## Dosya → sahip`), write the request row and wait for the owner or the user; re-read the target file immediately before editing; log completion. The user approves each change.
+Every item below changes a file outside both repos. Procedure for each: re-read `C:\Users\Bentego_Admin\.claude\SESSION-COORDINATION.md`; add a row to `## Change log` (time, `TI`, file, one-line summary) **before** applying; if the file has another owner (owner column of `## File → owner`), write the request row and wait for the owner or the user; re-read the target file immediately before editing; log completion. The user approves each change.
 
 | # | File | Owner (per SESSION-COORDINATION) | Exact change | Phase / when |
 |---|---|---|---|---|
