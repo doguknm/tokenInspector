@@ -46,6 +46,7 @@ Production runs the O10 release (backend `ddc7552`, schema 10). O9 (schema v11 +
 - Task prompts and JEV are limited to projects on both allowlists (backend `TASK_PROMPT_ALLOWED_PROJECTS`, plugin `task_prompt_allowed_projects`; empty = off) and to proven root tasks; `-devir` hand-off clones are path-denied in the plugin.
 - Deterministic complexity uses `request-shape-v1` numeric metadata, not raw prompt semantics.
 - Filesystem repository inventory and event-backed observed activity are different datasets.
+- The versioned export (`/api/export/v1/*`, schema v12) reads a snapshot by `token_events.ingest_seq`; any write that deletes or rewrites stored `token_events` rows must bump `export_state.revision` in the same transaction (AGENTS.md Gotchas, ADR-005).
 - Absolute workspace paths and complete Git remote URLs must not enter telemetry storage.
 
 ## Project Identity

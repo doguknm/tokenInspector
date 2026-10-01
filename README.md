@@ -127,7 +127,7 @@ python scripts/repair_task_parents.py --db "$DB_PATH" --apply    # verified onli
 
 `--backup-dir DIR` puts the backup elsewhere (default: next to the DB, `<db>.bak-repair-<UTC stamp>`). Output is one count per class, never refs or names.
 
-**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 11` (or `--to 10`; service stopped; exact source-version guard, SQLite ≥ 3.35). It runs `scripts/rollback_v12.sql` and then `scripts/rollback_v11.sql`, one step per transaction, and names the app commit to start afterwards.
+**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 11` (or `--to 10`; service stopped; exact source-version guard, SQLite ≥ 3.35). `--to 11` runs `scripts/rollback_v12.sql`; `--to 10` runs it and then `scripts/rollback_v11.sql`, one step per transaction. The runner names the app commit to start afterwards.
 
 ## Versioned read-only export (O9, schema v12)
 
