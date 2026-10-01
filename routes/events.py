@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
-from sqlalchemy import func
+from sqlalchemy import func, literal_column, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -370,11 +370,17 @@ async def _prepare_event(body: EventIn, project_name: str, session: AsyncSession
     )
 
 
+_NEXT_INGEST_SEQ = literal_column("(SELECT last_seq + 1 FROM export_state WHERE id = 1)")
+
+
 async def _insert_event(
     event: TokenEvent,
     session: AsyncSession,
 ) -> tuple[TokenEvent, bool]:
     values = event.model_dump()
+    # Export snapshot sequence (schema v12): read from the persistent high-water inside the INSERT, so it is
+    # assigned under the write lock, in commit order, and never reused.
+    values["ingest_seq"] = _NEXT_INGEST_SEQ
     statement = sqlite_insert(TokenEvent).values(**values)
     cross_project = bool(event.client_event_id) and event.client_event_id.startswith(CC_ID_PREFIX)
     if cross_project:
@@ -386,7 +392,9 @@ async def _insert_event(
             index_elements=["project_name", "client_event_id"],
             index_where=TokenEvent.client_event_id.is_not(None),
         )
-    await session.exec(statement)
+    result = await session.exec(statement)
+    if result.rowcount:  # really inserted: a duplicate (ON CONFLICT DO NOTHING) consumes no number
+        await session.execute(text("UPDATE export_state SET last_seq = last_seq + 1 WHERE id = 1"))
 
     if not event.client_event_id:
         return event, False
@@ -521,7 +529,7 @@ async def list_events(
     ).all()
     items = []
     for row in rows:
-        data = row.model_dump(exclude={"prompt_text", "tags_json"})
+        data = row.model_dump(exclude={"prompt_text", "tags_json", "ingest_seq"})
         data["tags"] = json.loads(row.tags_json) if row.tags_json else {}
         items.append(data)
     return {"items": items, "total": total, "page": page, "page_size": page_size}

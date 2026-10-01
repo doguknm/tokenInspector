@@ -103,9 +103,9 @@ async def test_schema_matches_independent_expectations(tmp_path):
             "prompt_captured_at", "prompt_expires_at", "prompt_purged_at", "created_at", "updated_at",
             "job_ref", "job_ref_conflicts"]
         events = [r[1] for r in conn.execute("PRAGMA table_info(token_events)")]
-        assert events[-7:] == ["complexity_method", "request_system_chars", "request_history_chars",
+        assert events[-8:] == ["complexity_method", "request_system_chars", "request_history_chars",
                                "request_tool_output_chars", "request_file_content_chars", "request_file_ref_count",
-                               "request_tool_names_json"]
+                               "request_tool_names_json", "ingest_seq"]
         unique = conn.execute("SELECT \"unique\" FROM pragma_index_list('tasks') WHERE name='ux_tasks_project_session_turn'"
                               ).fetchone()[0]
         cols = [r[2] for r in conn.execute("PRAGMA index_info('ux_tasks_project_session_turn')")]

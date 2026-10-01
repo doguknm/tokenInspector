@@ -29,6 +29,8 @@ class TokenEvent(SQLModel, table=True):
             unique=True,
             sqlite_where=text("substr(client_event_id, 1, 3) = 'cc-'"),
         ),
+        # v12: export snapshot sequence, assigned in commit order (O9 database.md Phase 3).
+        Index("ux_token_events_ingest_seq", "ingest_seq", unique=True, sqlite_where=text("ingest_seq IS NOT NULL")),
     )
     model_config = ConfigDict(protected_namespaces=())
 
@@ -97,6 +99,7 @@ class TokenEvent(SQLModel, table=True):
     request_file_content_chars: Optional[int] = None
     request_file_ref_count: Optional[int] = None
     request_tool_names_json: Optional[str] = None
+    ingest_seq: Optional[int] = None
 
 
 class Task(SQLModel, table=True):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 import task_store
 
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 Migration = Callable[[AsyncConnection], Awaitable[None]]
 
 
@@ -320,6 +321,58 @@ async def _m11(conn: AsyncConnection) -> None:
     )
 
 
+async def assign_missing_ingest_seq(conn: AsyncConnection) -> None:
+    """Number events whose ingest_seq is NULL above the persistent high-water, in (recorded_at, rowid) order.
+
+    Used by _m12 (backfill) and at every startup (self-heal after a code-only rollback). Runs inside the
+    caller's transaction; never touches a non-NULL value. Needs nothing beyond SQLite 3.24.
+    """
+    ids = [
+        row[0]
+        for row in (
+            await conn.execute(text("SELECT id FROM token_events WHERE ingest_seq IS NULL ORDER BY recorded_at, rowid"))
+        ).all()
+    ]
+    if not ids:
+        return
+    high = (await conn.execute(text("SELECT last_seq FROM export_state WHERE id = 1"))).scalar()
+    if high is None:  # inside _m12, before the export_state row exists
+        high = (await conn.execute(text("SELECT COALESCE(MAX(ingest_seq), 0) FROM token_events"))).scalar_one()
+    await conn.execute(
+        text("UPDATE token_events SET ingest_seq = :seq WHERE id = :id"),
+        [{"seq": high + n, "id": event_id} for n, event_id in enumerate(ids, start=1)],
+    )
+    await conn.execute(text("UPDATE export_state SET last_seq = :seq WHERE id = 1"), {"seq": high + len(ids)})
+
+
+async def _m12(conn: AsyncConnection) -> None:
+    """Export snapshot sequence with a persistent high-water, plus revision/epoch for cursor invalidation."""
+    await _add_columns(conn, "token_events", {"ingest_seq": "INTEGER"})
+    await conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS export_state ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), "
+            "last_seq INTEGER NOT NULL, "
+            "revision INTEGER NOT NULL DEFAULT 0, "
+            "epoch TEXT NOT NULL)"
+        )
+    )
+    await assign_missing_ingest_seq(conn)
+    await conn.execute(
+        text(
+            "INSERT OR IGNORE INTO export_state (id, last_seq, revision, epoch) "
+            "VALUES (1, (SELECT COALESCE(MAX(ingest_seq), 0) FROM token_events), 0, :epoch)"
+        ),
+        {"epoch": secrets.token_hex(16)},
+    )
+    await conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_token_events_ingest_seq "
+            "ON token_events (ingest_seq) WHERE ingest_seq IS NOT NULL"
+        )
+    )
+
+
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _m1),
     (2, _m2),
@@ -332,6 +385,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (9, _m9),
     (10, _m10),
     (11, _m11),
+    (12, _m12),
 ]
 
 

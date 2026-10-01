@@ -19,9 +19,12 @@ from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
 # source version -> (rollback script, resulting version)
-STEPS = {11: ("rollback_v11.sql", 10)}
+STEPS = {12: ("rollback_v12.sql", 11), 11: ("rollback_v11.sql", 10)}
 # resulting version -> application artifact to start afterwards
-APP_FOR_VERSION = {10: "a backend commit whose migrations.LATEST_SCHEMA_VERSION is 10 (e.g. 904dec2 or prod main before O9)"}
+APP_FOR_VERSION = {
+    10: "a backend commit whose migrations.LATEST_SCHEMA_VERSION is 10 (e.g. 904dec2 or prod main before O9)",
+    11: "a backend commit whose migrations.LATEST_SCHEMA_VERSION is 11 (e.g. fdbb1e5, O9 phases 1-2)",
+}
 MIN_SQLITE = (3, 35, 0)
 
 

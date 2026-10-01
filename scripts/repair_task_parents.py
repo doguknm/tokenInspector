@@ -221,6 +221,10 @@ def run(db: Path, *, apply: bool = False, backup_dir: Path | None = None) -> int
                 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
                 roots_updated = _apply_plan(conn, plan, now)
                 _check(plan, {i: (r[3], r[4]) for i, r in _rows(conn).items()})  # the applied graph
+                if (plan.relinks or roots_updated) and conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'export_state'").fetchone():
+                    # snapshotted task data changed: expire open export cursors (schema v12, O9 X1)
+                    conn.execute("UPDATE export_state SET revision = revision + 1 WHERE id = 1")
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")

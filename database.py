@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from migrations import backup_database_if_needed, run_migrations
+from migrations import assign_missing_ingest_seq, backup_database_if_needed, run_migrations
 import models  # noqa: F401  # register SQLModel tables before create_all
 
 DB_PATH = os.environ.get("DB_PATH", "token_inspector.db")
@@ -78,12 +78,16 @@ async def init_db(db_path: str | None = None) -> None:
         async with engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
             await run_migrations(conn)
+            await assign_missing_ingest_seq(conn)
         return
     migration_engine = _migration_engine(path)
     try:
         async with migration_engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
             await run_migrations(conn)
+            # Self-heal: rows written by older code (NULL ingest_seq) are numbered above the high-water,
+            # in the same transaction as the migrations (O9 database.md Phase 3).
+            await assign_missing_ingest_seq(conn)
             mode = (await conn.execute(text("PRAGMA journal_mode"))).scalar_one()
             if path != ":memory:" and str(mode).lower() != "wal":
                 raise RuntimeError(f"SQLite WAL mode was not enabled (journal_mode={mode!r})")

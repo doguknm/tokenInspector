@@ -69,7 +69,7 @@ async def test_m11_fresh_equals_migrated(tmp_path):
     await database.init_db(str(fresh))
     migrated = await _v10_db(tmp_path)
     await database.init_db(str(migrated))
-    assert _version(fresh) == _version(migrated) == 11 == migrations.LATEST_SCHEMA_VERSION
+    assert _version(fresh) == _version(migrated) == migrations.LATEST_SCHEMA_VERSION
     for table in ("tasks", "token_events"):
         assert _columns(fresh, table) == _columns(migrated, table), table
         assert _indexes(fresh, table) == _indexes(migrated, table), table
@@ -121,18 +121,18 @@ async def test_rollback_to_v10(tmp_path, capsys):
     # already at the target: nothing to do; re-upgrade restores v11
     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 0
     await database.init_db(str(path))
-    assert _version(path) == 11
+    assert _version(path) == migrations.LATEST_SCHEMA_VERSION
 
 
 async def test_rollback_runner_refuses_unknown_source_and_old_sqlite(tmp_path, monkeypatch):
     path = tmp_path / "v11.db"
     await database.init_db(str(path))
     with closing(sqlite3.connect(path)) as conn:
-        conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (12, 'x')")
+        conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (13, 'x')")
         conn.commit()
     columns = _columns(path, "tasks")
-    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1  # no step from 12 (yet): refused
-    assert _columns(path, "tasks") == columns and _version(path) == 12
+    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1  # no step from 13: refused
+    assert _columns(path, "tasks") == columns and _version(path) == 13
     monkeypatch.setattr(rollback_schema.sqlite3, "sqlite_version_info", (3, 34, 1))
     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1
 

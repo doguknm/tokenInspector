@@ -741,7 +741,7 @@ async def test_allowlist_config_boundary(monkeypatch, caplog):
     for name in ("zz-alpha-proj", "zz-beta-proj"):
         assert name not in meta.text
     assert not any(v == 2 or v == 3 for v in meta.json().values() if isinstance(v, int) and not isinstance(v, bool)
-                   ) and meta.json()["schema_version"] == 11
+                   ) and meta.json()["schema_version"] == 12
     # driver DEBUG records echo SQL parameters (the project name of a normal event, which is permitted)
     app_log = "\n".join(r.getMessage() for r in caplog.records if not r.name.startswith(("aiosqlite", "sqlalchemy")))
     warnings = [r.getMessage() for r in caplog.records if r.name == "features" and r.levelno == logging.WARNING]

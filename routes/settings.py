@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -162,6 +162,9 @@ async def recost(
                 event.pricing_version = result.pricing_version
                 session.add(event)
     if not dry_run:
+        if changed:
+            # Stored costs changed under already-snapshotted rows: expire open export cursors (O9 X1).
+            await session.execute(text("UPDATE export_state SET revision = revision + 1 WHERE id = 1"))
         await session.commit()
     return {
         "dry_run": dry_run,
