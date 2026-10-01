@@ -5,6 +5,7 @@ import random
 import re
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -247,6 +248,9 @@ async def test_repair_backup_accepts_real_concurrent_writer(tmp_path):
                              "'x', 'x', 0, 'x', 'x')", (REF("z", "w", str(n)), f"w{n}"))
                 conn.commit()
                 n += 1
+                # Leave the write lock free between commits: a loop that re-takes it at once can starve the
+                # repair's BEGIN IMMEDIATE past its busy timeout (CLAUDE.md RP 19).
+                time.sleep(0.001)
 
     thread = threading.Thread(target=writer)
     thread.start()
