@@ -29,7 +29,7 @@ Dashboard: http://127.0.0.1:8100/
 
 Production uses `DB_PATH` explicitly. Never assume the repository-local default database is production. Do not commit, mirror, or upload SQLite files or backups.
 
-Production runs the O10 release (backend `ddc7552`, schema 10). O9 (schema v11, jobs, cross-project child fix, Claude Code producer) is on `feat/task-telemetry-jev-pilot` only until the single O9 deploy (`Plans/o9-job-correlation-cc-producer/status.md` → Deploy Runbook); the Claude Code hook is not installed anywhere yet.
+Production runs the O10 release (backend `ddc7552`, schema 10). O9 (schema v11 + v12: jobs, cross-project child fix, Claude Code producer, versioned read-only export) is on `feat/task-telemetry-jev-pilot` only until the single O9 deploy (`Plans/o9-job-correlation-cc-producer/status.md` → Deploy Runbook); the Claude Code hook is not installed anywhere yet.
 
 ## Critical Technical Patterns
 
@@ -109,7 +109,8 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 | Demo seed / rollback | `scripts/seed_tasks_demo.py`, `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` |
 | Cost per job API (v11) | `routes/jobs.py`; job tag normalization in `routes/events.py` (`_normalize_reserved`); task → job in `task_store.py` |
 | Cross-project parent repair | `scripts/repair_task_parents.py` (dry-run default) |
-| Schema rollback runner | `scripts/rollback_schema.py` (+ `scripts/rollback_v11.sql`) |
+| Schema rollback runner | `scripts/rollback_schema.py` (+ `scripts/rollback_v12.sql`, `scripts/rollback_v11.sql`) |
+| Versioned read-only export (v12) | `routes/export.py`; contract `docs/export-contract-v1.md`, `docs/adr/005-export-contract.md`; `ingest_seq` in `routes/events.py` (`_insert_event`), self-heal in `migrations.assign_missing_ingest_seq` |
 | Claude Code producer (hook, installer) | `producers/claude_code/` (`cc_hook.py`, `install.py`, README) |
 | Job contract / dedup authority | `docs/adr/003-job-correlation-contract.md`, `docs/adr/004-cross-source-dedup-authority.md` |
 | Task prompt policy | `docs/adr/002-task-prompt-retention-and-jev.md` |
@@ -205,4 +206,9 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 19. **`test_repair_backup_accepts_real_concurrent_writer` fails intermittently on hermes**
    - **Symptoms:** The repair test fails with `sqlite error; nothing was changed` about 1 run in 5 on hermes; a rerun passes. Windows is green.
    - **Root cause:** The test's tight concurrent writer loop can starve the repair's `BEGIN IMMEDIATE` lock beyond `busy_timeout` (test timing, not the repair control; the script correctly refuses and changes nothing).
-   - **Fix/check:** Rerun the test alone to confirm it is this flake, not a regression. Open item: loosen the writer loop's timing before the O9 hermes code review (status.md Drift Log).
+   - **Fix/check:** Fixed in O9 Phase 3 (`fdbb1e5`): the writer pauses 1 ms after each commit; the repair script and the assertion are unchanged, and the test passed 10/10 standalone on hermes. If it fails again, rerun it alone; a failure that repeats is a regression in the repair's lock or backup verification, not this flake. Never fix it by weakening the assertion.
+
+20. **Browser test fails with `'builtin_function_or_method' object has no attribute '_pw_impl_instance_'`, or a CSV cell with `\r` reads back as `\n`**
+   - **Symptoms:** A Playwright test errors inside `_impl_to_api_mapping.py` as soon as an event fires; or a downloaded CSV cell that holds a carriage return compares unequal after `csv.reader`.
+   - **Root cause:** Playwright's sync API attaches bookkeeping to the handler object, which a builtin bound method such as `list.append` cannot hold; and `open()` without `newline=""` translates `\r` to `\n` before `csv.reader` sees it.
+   - **Fix/check:** Pass `lambda d: downloads.append(d)` (a Python function) to `page.on(...)`; read downloaded CSV files with `open(path, encoding="utf-8", newline="")` (`tests/browser/test_export_download.py`).

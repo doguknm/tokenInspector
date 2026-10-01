@@ -42,7 +42,7 @@ Apply it with `systemctl --user daemon-reload && systemctl --user restart token-
 | Models | Cross-project latency bar chart, cost comparison table |
 | Complexity | Per-call `request-shape-v1` tier (1–5), filterable by project, model, method and 7/30/90 days: a calls/tasks/tokens/cost-per-tier chart split by model, a per-tier volume table (calls, tasks, input / cache read / cache write / output with per-call and per-task averages) and a tier × model table (per-task and per-call tokens, latency, TTFT, error rate, priced cost per task with unpriced calls shown, completion counts, low-sample and lowest-cost/latency marks); routing recommendations table |
 | Tasks | One row per task (a Hermes turn): request-shape-v1 start complexity, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state; a start-complexity vs JEV scatter; a detail panel with probabilities, child tasks and evaluations. Never shows prompt text |
-| Jobs | One row per launcher job (`job_ref`), filterable by runtime, work type and 7/30/90 days: work type, runtime, projects, tasks, calls, the four token types and their sum, priced cost with the unpriced count (never `$0`), estimated cost, first/last event (not job duration), attempts and conflicts (calls / tasks); an anomaly line for job conflicts and invalid attribution |
+| Jobs | One row per launcher job (`job_ref`), filterable by runtime, work type and 7/30/90 days: work type, runtime, projects, tasks, calls, the four token types and their sum, priced cost with the unpriced count (never `$0`), estimated cost, first/last event (not job duration), attempts and conflicts (calls / tasks); an anomaly line for job conflicts and invalid attribution. Below the table, **Export (v1)** downloads jobs, tasks or LLM calls for a UTC date range as CSV (built in the browser from the JSON export, same fields, formula-injection guarded) and links the JSON first page |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
 
 ## Task telemetry and the JEV pilot
@@ -127,7 +127,23 @@ python scripts/repair_task_parents.py --db "$DB_PATH" --apply    # verified onli
 
 `--backup-dir DIR` puts the backup elsewhere (default: next to the DB, `<db>.bak-repair-<UTC stamp>`). Output is one count per class, never refs or names.
 
-**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 10` (service stopped; exact source-version guard, SQLite ≥ 3.35). It runs `scripts/rollback_v11.sql` and names the app commit to start afterwards.
+**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 11` (or `--to 10`; service stopped; exact source-version guard, SQLite ≥ 3.35). It runs `scripts/rollback_v12.sql` and then `scripts/rollback_v11.sql`, one step per transaction, and names the app commit to start afterwards.
+
+## Versioned read-only export (O9, schema v12)
+
+> **Status:** on the feature branch, not deployed.
+
+`GET /api/export/v1/jobs`, `/tasks` and `/events` serve jobs, tasks and LLM calls as JSON for other local tools. Read-only, no auth (also with `INGEST_TOKEN` set). Contract, field tables and error codes: [docs/export-contract-v1.md](docs/export-contract-v1.md); design: [ADR-005](docs/adr/005-export-contract.md).
+
+```bash
+curl -s "http://127.0.0.1:8100/api/export/v1/events?from=2026-09-01T00:00:00Z&to=2026-09-29T00:00:00Z&limit=1000"
+```
+
+- `from` inclusive, `to` exclusive, at most 92 days; `limit` 1–1000 (default 500); follow `next_cursor` until `complete: true`.
+- Pages are a snapshot: calls ingested after page 1 appear in the next export, never in an open cursor chain. A recost or repair that changes stored rows expires open cursors (`409 snapshot_expired`: restart from page 1).
+- Tasks and jobs are a start-time cohort (first call in the period; sums include their later calls). For period-exact money, sum the events dataset.
+- Zero, `null` (unknown) and an absent key (not measured) are different. No prompt or response text, tool data, paths or host names are exported.
+- Schema v12 adds `token_events.ingest_seq` (assigned in commit order from a persistent high-water) and the `export_state` table; the migration numbers existing rows once.
 
 ## Claude Code producer
 
@@ -295,6 +311,8 @@ GET  /api/meta                            Schema version, feature gates, config_
 GET  /api/tasks?allowed_only=true         Tasks of allowlisted projects only (needs X-Ingest-Token)
 GET  /api/jobs?days=30&runtime=&work_type=&page=1&page_size=50
                                           Cost per launcher job (read-only, no auth; invalid filter → 400 invalid_filter)
+GET  /api/export/v1/{jobs,tasks,events}?from=&to=&limit=&cursor=
+                                          Versioned read-only export (docs/export-contract-v1.md)
 
 GET  /api/analytics/summary?days=7        Overall stats
 GET  /api/analytics/project-inventory     Bounded Git inventory with telemetry status

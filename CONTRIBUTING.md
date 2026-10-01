@@ -45,7 +45,8 @@ Focused suites (all run in the default `pytest -q` and in CI's `test` job):
 python -m pytest -q tests/test_job_correlation.py tests/test_jobs_api.py tests/test_migration_v11.py \
   tests/test_cross_project_parent.py tests/test_repair_task_parents.py tests/test_launcher_env_contract.py   # jobs (O9 phase 1)
 python -m pytest -q tests/test_cc_*.py tests/test_dedup_authority.py                                        # Claude Code producer (O9 phase 2)
-python -m pytest -q -m browser tests/browser/test_jobs_view.py                                              # Jobs view (Playwright)
+python -m pytest -q tests/test_export_*.py tests/test_migration_v12.py tests/test_docs_export.py             # export v1 (O9 phase 3)
+python -m pytest -q -m browser tests/browser/test_jobs_view.py tests/browser/test_export_download.py         # Jobs view + CSV export (Playwright)
 ```
 
 - `test_launcher_env_contract.py` runs the real `hermes.sh` copies and the `/hermes` skill file from the Windows workspace with stubbed `ssh`/`scp`/agent; it skips any copy that is not on the machine (so CI skips it).

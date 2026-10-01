@@ -211,6 +211,7 @@ async def test_ingest_seq_monotonic_in_commit_order(client):
     results = await asyncio.gather(*(post(client, *batch) for batch in batches))
     assert all(r["inserted"] == 5 for r in results)
     got = dict(await rows("SELECT client_event_id, ingest_seq FROM token_events"))
+    assert None not in got.values()  # every inserted row is numbered at insert time
     seqs = sorted(got.values())
     assert seqs == list(range(base + 1, base + 101))  # unique, gap-free, above the old high-water
     for b in range(20):  # one batch = one transaction: its rows are contiguous and in request order

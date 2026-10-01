@@ -70,10 +70,11 @@ Backend unavailability must never break the caller. Backend validation failures 
 | `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` | schema rollback and code-only rollback check |
 | `routes/jobs.py` | `GET /api/jobs`: cost per launcher job (read-only, no auth) |
 | `scripts/repair_task_parents.py` | stdlib-only re-link of pre-O9 cross-project child tasks; dry-run default, verified backup before `--apply`, counts only |
-| `scripts/rollback_schema.py`, `scripts/rollback_v11.sql` | the only supported schema rollback (v11 → v10): exact source-version guard, SQLite ≥ 3.35 |
+| `scripts/rollback_schema.py`, `scripts/rollback_v12.sql`, `scripts/rollback_v11.sql` | the only supported schema rollback (v12 → v11 → v10, one step per transaction): exact source-version guard, SQLite ≥ 3.35 |
+| `routes/export.py` | `GET /api/export/v1/{jobs,tasks,events}`: versioned read-only export (snapshot by `ingest_seq`, field and value allowlists, static errors); contract `docs/export-contract-v1.md`, ADR-005 |
 | `producers/claude_code/` | stdlib-only Claude Code hook producer: `cc_hook.py` (entry, watchdog, fail-open), `cc_transcript.py` (reader, group finality), `cc_events.py` (allowlisted mapping, `cc-` ids), `cc_attribution.py`, `cc_config.py` (URL, token, aliases, job env), `cc_state.py` (cursor, locks, counters), `cc_client.py` (batch POST, `valid_ack`), `install.py` (settings.json installer) |
 | `static/` | dashboard shell, charts, tables, styles (Tasks view included) |
-| `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot, jobs, repair, Claude Code producer (`test_cc_*.py`, `test_dedup_authority.py`) regressions |
+| `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot, jobs, repair, Claude Code producer (`test_cc_*.py`, `test_dedup_authority.py`), export (`test_export_*.py`, `test_migration_v12.py`, `test_docs_export.py`) regressions |
 | `tests/browser/` | Playwright suite (marker `browser`; skipped without Playwright) |
 
 ## Data and Privacy Contract
@@ -243,7 +244,11 @@ GET  /api/tasks/retention-status
 POST /api/tasks/purge-expired         (sensitive; dry_run=true by default)
 
 GET  /api/jobs                        (days 1–3650 = 30, runtime, work_type, page, page_size ≤ 200; invalid filter → 400 {"error":"invalid_filter"})
+
+GET  /api/export/v1/jobs|tasks|events (from, to: ISO-8601 with zone, [from, to) ≤ 92 days; limit 1–1000 = 500; cursor; no auth, read-only)
 ```
+
+The export is a separate contract with its own `schema_version` (1): `docs/export-contract-v1.md`. Errors are static (`invalid_range`, `invalid_limit`, `invalid_cursor` 400; `snapshot_expired` 409; `busy` 503 + `Retry-After: 5`). Pages are a snapshot: `ingest_seq <= as_of` (from `export_state.last_seq` on page 1), and membership and sums — including a task's job — come from snapshot events only. Tasks and jobs are a start-time cohort (first call in the period; sums over all their snapshot calls).
 
 Every `by-*` grouping, `timeseries` and `project-inventory` row carries per-category sums `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens`. `prompt_tokens` never includes cache (ingest subtracts it when `input_tokens_include_cache` is set). The older `total_tokens` key stays input + output only; the dashboard labels its all-type total as a sum computed from the four fields.
 
@@ -295,6 +300,9 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 - Tags are capped at `TAG_BYTES_MAX` = 1024 bytes and 20 keys (`routes/events.py`). The worst-case plugin tags measure 17 keys / 722 bytes (`tests/fixtures/worst_case_plugin_tags.json`, byte-identical in both repos); measure again before adding a tag key.
 - `attribution_invalid` is backend-only: an incoming value is removed before normalization, and the mark is set only when a present `runtime`/`producer` was dropped. Marked events are stored but never counted and never treated as legacy `hermes-agent`.
 - Schema rollback only through `scripts/rollback_schema.py`, never by running a `rollback_v*.sql` by hand.
+- Any write that deletes or rewrites stored `token_events` rows (or the task data the export reads) must bump `export_state.revision` in the same transaction, as recost apply and repair apply do; otherwise an open export cursor silently mixes two states of the data.
+- `ingest_seq` is assigned only by `_insert_event` (scalar subquery on `export_state.last_seq` + the `last_seq` bump when the row was really inserted). Any other insert path leaves it NULL until the next startup numbers it (self-heal in `database.init_db`); a high-water must never be computed from `MAX(ingest_seq)`.
+- `ingest_seq` is internal: it is never returned by `GET /api/events` or the ingest ack.
 - The Claude Code hook must end through `sys.exit(main())`, not `os._exit`, or buffered output can be dropped silently; only the watchdog hard-exits. It must stay stdlib-only (`test_cc_producer_is_stdlib_only`).
 - Global Claude Code hooks take effect in every running session on that machine immediately, without a restart: run `install.py --apply` only after the backend with the Phase 2 code is live, and `--uninstall --apply` first if anything misbehaves or before a backend rollback below it.
 - The child-transition null overwrites the row in place (`secure_delete`), but the WAL frame that held the prompt stays until the next checkpoint (auto-checkpoint or the retention loop's `wal_checkpoint(TRUNCATE)`). Byte-level tests checkpoint first.

@@ -16,7 +16,7 @@ from test_job_correlation import JOB_A, JOB_B, rows
 
 START, END = "2026-09-01T00:00:00Z", "2026-09-29T00:00:00Z"
 START_N, END_N = "2026-09-01T00:00:00.000000Z", "2026-09-29T00:00:00.000000Z"
-PRICED, UNPRICED = "claude-sonnet-4-6", "zz-unpriced-model"
+PRICED, UNPRICED = "claude-sonnet-4-6", "zz-export-unpriced-model"
 PLUGIN = {"runtime": "hermes-agent", "producer": "hermes-plugin"}
 CC = {"runtime": "claude-code@windows", "producer": "claude-code-hook"}
 DATASETS = ("jobs", "tasks", "events")
@@ -359,7 +359,7 @@ async def test_export_excludes_evaluator(client):
 
 
 async def test_stable_ids_and_updated_at(client):
-    await post(client, ev("a", tags={**PLUGIN, "job_ref": JOB_A}, model=UNPRICED),
+    await post(client, ev("a", tags={**PLUGIN, "job_ref": JOB_A}, model="zz-export-recost-model"),
                ev("cc-" + "3" * 32, turn="t2", tags={**CC, "job_ref": JOB_A}))
     runs = [{d: await export(client, d) for d in DATASETS} for _ in range(2)]
     for d, key in (("events", "event_id"), ("tasks", "task_ref"), ("jobs", "job_ref")):
@@ -370,7 +370,7 @@ async def test_stable_ids_and_updated_at(client):
     tasks = by((await export(client, "tasks"))["items"], "session_id")
     assert tasks["s1"]["updated_at"] > task_before  # a later event on an open task moves it
     job_before = (await export(client, "jobs"))["items"][0]
-    rule = {"model": UNPRICED, "input_price_per_1m": 1.0, "output_price_per_1m": 1.0}
+    rule = {"model": "zz-export-recost-model", "input_price_per_1m": 1.0, "output_price_per_1m": 1.0}
     assert (await client.post("/api/settings/pricing", json=rule)).status_code == 200
     assert (await client.post("/api/settings/recost", params={"dry_run": "false"})).json()["changed"] == 1
     job_after = (await export(client, "jobs"))["items"][0]

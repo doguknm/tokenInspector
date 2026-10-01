@@ -71,6 +71,22 @@ A job is an aggregate, not a table, and a task belongs to at most one job. Count
 
 A cross-project subagent names its parent's project (`parent_project_name`, validated, never stored), so the parent task ref is hashed with the right project; `scripts/repair_task_parents.py` re-links rows written before that fix.
 
+## Read-Only Export Boundary (schema v12)
+
+Other local tools (consumers such as PossibleSkills) read Token Inspector only through the versioned export; they never open the SQLite file or scrape the dashboard. Contract: `docs/export-contract-v1.md`; decision: ADR-005.
+
+```text
+ingest INSERT → ingest_seq = export_state.last_seq + 1 (under the write lock, commit order, never reused)
+recost / repair apply with changes → export_state.revision + 1 (same transaction)
+GET /api/export/v1/{jobs,tasks,events}
+  page 1: as_of, revision, epoch ← export_state
+  every page: only ingest_seq <= as_of; membership, task job and sums from those events
+  cursor (dataset, range, as_of, revision, epoch, key) → next page; revision/epoch changed → 409 snapshot_expired
+  items built from field allowlists + value rules → JSON; the dashboard turns the JSON pages into CSV
+```
+
+The export is read-only and unauthenticated like the analytics API. It carries no prompt or response text, tool data, paths or host names; every exported string passes a value rule (safe id or pseudonym, model shape, closed classes). Rows written by older code without a sequence are numbered at startup, above the high-water.
+
 ## Model and Pricing Identity
 
 Requested, resolved, aliased, and pricing model values remain separate. Pricing is calculated at ingest and carries status/reason/version metadata. Missing rules yield `unpriced` and null cost.
@@ -155,3 +171,4 @@ Remote exposure is not part of the default architecture. If enabled, it must rem
 - Unbounded recursive home-directory discovery: privacy and performance risk.
 - A jobs table or job-level launcher event: a job is an aggregate of tagged events; there is no job duration (ADR-003).
 - Building Claude Code events from hook stdin: only transcript usage records count, so re-runs, streaming lines and resumed copies count once (ADR-004).
+- Export pagination on `recorded_at` or `rowid`, or reusing `GET /api/events`: not commit-ordered, not stable, and not allowlisted (ADR-005). Server-side CSV: the dashboard builds it from the JSON pages.

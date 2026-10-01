@@ -23,8 +23,15 @@ All notable user-visible and operational changes are documented here.
 - `scripts/rollback_schema.py` (+ `scripts/rollback_v11.sql`): the only supported schema rollback, with an exact source-version guard.
 - Claude Code producer `producers/claude_code/` (O9; built, **not installed**): stdlib-only `Stop`/`SubagentStop`/`SessionEnd` hook sending one event per API call with allowlisted metadata only (never text or paths), 5 s bound, fail-open, at-least-once with idempotent `cc-` ids; subagents as child tasks; `install.py` with a content-free dry-run summary, exact-command ownership, backup, atomic write and the PossibleSkills settings lock (ADR-004).
 - Plugin: reads the launcher job env once per process and sends validated `job_ref` / `work_type` / `job_attempt` plus `runtime=hermes-agent` / `producer=hermes-plugin` on its events, and `parent_project_name` on child events.
+- Versioned read-only export v1 (O9 Phase 3, schema v12; not deployed yet): `GET /api/export/v1/{jobs,tasks,events}` with a JSON envelope (`schema_version`, period, `fields`, staleness, coverage), keyset pagination over a snapshot, start-time cohorts for tasks and jobs, field and value allowlists, static errors (`invalid_range`, `invalid_limit`, `invalid_cursor`, `snapshot_expired`, `busy`). Contract `docs/export-contract-v1.md`, ADR-005.
+- Jobs view: an **Export (v1)** panel that downloads jobs, tasks or LLM calls as CSV built in the browser from the JSON export (same fields, formula-injection guard, 100 000-row cap) and links the JSON first page.
+- Schema v12: `token_events.ingest_seq` assigned in commit order from the persistent high-water `export_state.last_seq`, plus `export_state.revision`/`epoch` for cursor invalidation; rows written by older code are numbered at startup. `scripts/rollback_schema.py` gains the v12 → v11 step (`scripts/rollback_v12.sql`).
 
 ### Changed
+
+- Recost with `dry_run=false` and changes, and `scripts/repair_task_parents.py --apply` with changes now also bump `export_state.revision`, which expires open export cursors.
+- `/api/meta` reports `schema_version` 12.
+- Test: the concurrent writer in `test_repair_backup_accepts_real_concurrent_writer` pauses 1 ms between commits, so it no longer starves the repair's write lock on hermes (Recurring Problem 19).
 
 - Docs translated to English: the last Turkish references in the O9 plan (`Plans/o9-job-correlation-cc-producer/`) and the project's Claude memory.
 - `token_inspector_client.py` and the README `push_token_event` helper are a safe producer example: token, batch-only, status and ack checks, loss/unconfirmed counters, stable `client_event_id`, no prompt or error text.
