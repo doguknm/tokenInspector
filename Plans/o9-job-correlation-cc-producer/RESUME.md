@@ -7,7 +7,8 @@ State:
 - Plan LOCKED 2026-09-28 (`ffa5228`): PLAN_BASE `904dec2` (backend), plugin base `4b069b4`; Hermes Code Review spec in status.md. O5 resolved (TI owns the AIFromScratch `hermes.sh` and `commands/hermes.md`; ledger rows added), O13 resolved (hook bound 5 s). S1 also prints `job=<id>` (PossibleSkills request). The Windows settings file is `C:\Users\Doğukan Mutlu\.claude\settings.json`.
 - Phase 1 DONE (checkpoint 2026-09-28): backend `e1cab32`, plugin `6b79ec9`, both pushed to `hermes` (backend also `origin`); suites green locally and on hermes; mutations 37/37 caught. S1/S4 edited (ledger rows); S2/S3 patches in `shared-patches/`, request row in the ledger, owners not yet applied.
 - Phase 2 DONE (checkpoint 2026-09-28): C0 gate passed (rules 1–9 in the Drift Log); backend `6ec9922`, `58b9753`, `f289af4` (+ status commit), plugin `bbe0781`; pushed to `hermes`; suites green locally and on hermes; mutations CM1–CM37 37/37 caught.
-- **Now:** Phase 3 (versioned read-only export: X1–X6 + frontend Export panel) next, in a new session.
+- Phase 3 DONE (checkpoint 2026-10-01, goal `goal-1-phase3.txt`): flaky repair test fixed (`fdbb1e5`, 10/10 on hermes); backend `2f5a761` (v12, X1), `cf4b1bf` (X2–X5), `be86f18` (Export panel), `c4a07bc` (X6 docs) + status commit; pushed to `hermes` (`origin` unreachable); suites green locally (535 incl. 41 browser) and on hermes (478 passed, 17 skipped); mutations XM1–XM25, FM2–FM3, FM5–FM7 30/30 caught.
+- **Now:** stage 2 — hermes code review (1 round, spec in status.md `## Hermes Code Review`) + Claude integration review, as a separate goal. Then stage 3: the single deploy with user approval. PossibleSkills is told the export is live only after the deploy (O10).
 
 Decisions already made (do not ask again):
 - Every lane Claude Opus 5.5, direct (frontend with `frontend-design`; tests-e2e extends the Playwright suite). Hermes plan review 1 round; hermes code review 1 round; Claude integration review (Opus).

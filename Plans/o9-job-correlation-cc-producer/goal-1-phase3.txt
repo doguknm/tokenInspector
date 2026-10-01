@@ -1,0 +1,39 @@
+Goal: O9 stage 1 — fix the flaky repair test, then build O9 Phase 3 (versioned read-only export, X1–X6 + frontend Export panel) exactly as the locked lane files say, and close the Phase 3 checkpoint. Done when: AC3.1–AC3.9 are implemented and each maps to a passing test; mutations XM1–XM25, FM2–FM3, FM5–FM7 are all caught; the backend suite is green on Windows and on hermes (the repair test 10/10 standalone on hermes); the Phase 3 row of the Phase Checkpoints table in status.md is filled; the commit is pushed to `hermes`. Nothing is deployed, installed or restarted.
+
+READ FIRST: C:\Users\Bentego_Admin\Projects\tokenInspector\CLAUDE.md (Recurring Problems 6, 7, 8, 10, 11, 17, 18, 19), then in Plans\o9-job-correlation-cc-producer\: RESUME.md, status.md (Drift Log, Known Limitations, Phase Checkpoints), database.md (v12), backend.md (## Phase 3, X1–X6, "Value rules"), frontend.md (Phase 3), tests-other.md (Phase 3, XM*), tests-e2e.md (Phase 3, FM*), ps-export-contract-inputs.md. The plan is LOCKED: do not re-ask decisions recorded in RESUME.md or the Drift Log.
+
+REPO: C:\Users\Bentego_Admin\Projects\tokenInspector, branch feat/task-telemetry-jev-pilot. Phase 3 changes no plugin code (token_inspector repo stays untouched).
+
+ORDER:
+1. Flaky test (Recurring Problem 19): loosen the concurrent writer loop timing in `test_repair_backup_accepts_real_concurrent_writer` only. Do not change the repair script and do not weaken an assertion. Check: the test still turns red when the repair's lock/refusal handling is broken (one mutation, then revert). Run it 10 times standalone on hermes. Own commit.
+2. database v12: `token_events.ingest_seq`, `export_state.last_seq` high-water, revision bump (database.md).
+3. X1 ingest sequence → X2 export router → X3 envelope → X4 field allowlists → X5 errors and limits. Write each step's tests (tests-other.md) with the step.
+4. frontend Export panel in the Jobs view, CSV built in the browser from the JSON export, formula-injection guard (AC3.9). Use `frontend-design`.
+5. tests-e2e: CSV download browser test (`-m browser`).
+6. X6: `docs/export-contract-v1.md`, the ADR named in backend.md X6, and the maintenance docs (README, AGENTS.md, ARCHITECTURE.md, CHANGELOG `[Unreleased]`, CONTRIBUTING if commands changed).
+7. Mutations XM1–XM25, FM2–FM3, FM5–FM7 with the runner pattern of Recurring Problem 18. Log every result in the Verification Log.
+8. Checkpoint: suites local + hermes, commit, push to `hermes` (backend `origin` too, as in Phases 1–2), fill the Phase 3 row and Lane Status in status.md.
+
+ANTI-OVERENGINEERING (caveman):
+- Run each implementation step (2–6) under `caveman:lean-build`. Its stop condition is the step's acceptance criteria in the lane file, nothing more.
+- Run step 1 under `caveman:surgical-patch` and step 8 under `caveman:verify-and-stop`.
+- Use `caveman:cavecrew-investigator` to locate code instead of reading whole directories.
+- After each step, run `caveman:cavecrew-reviewer` on that step's diff. Any finding of extra scope (unrequested option, config knob, abstraction used once, error handling for impossible cases, server-side CSV) is removed before the next step.
+- If the spec looks wrong or incomplete, write a Drift Log entry and ask. Never add an unspecified feature silently.
+- Caveman applies to chat only. Code, comments, docs, commit messages and status.md are written in normal English prose.
+
+LOCKED:
+- No deploy, no migration on the production DB, no plugin install, no `hermes gateway restart`, no Claude Code hook install, no S2/S3 patch, no flag change. Those belong to stage 3 (deploy, with user approval).
+- Do not tell PossibleSkills the export is live (O10): it is not live until the deploy.
+- No hermes code review and no integration review in this goal: they are stage 2 and need user triage.
+- Privacy: no prompt/response text, tool args, paths, hostnames or free error text in any export field; value-level canaries as in tests-other.md.
+- Shared files (SESSION-COORDINATION.md ledger) are not expected in Phase 3. If one must change, stop and ask.
+
+CHECKS (run before the checkpoint commit):
+- Windows: `.venv/Scripts/python.exe -m pytest -q` (incl. browser), `py_compile` of `*.py routes/*.py scripts/*.py producers/claude_code/*.py`, `node --check static/app.js`, `git diff --check`.
+- hermes: backend suite in a temp worktree with the venv python (Recurring Problems 8 and 11), then remove the worktree. The prod checkout on `main` is never touched.
+- Every mutation's original string is present in its target file after the runner finishes.
+
+RULES: `python` not `python3`; patch scripts via Write, never Bash heredoc; replies in Turkish; last line "Hermes kullanıldı"/"Hermes kullanılmadı" (hermes is used only for the suite run and the push, never for a review). If the weekly limit reaches 90%, finish the current step, commit locally and stop.
+
+END: report the checkpoint (commits, test counts, mutation totals, Drift Log entries), then `/caveman off` → `/sync-docs` → `/compress` → `/sync-memory`. Stop. Stage 2 (hermes code review 1 round + Claude integration review) starts as a separate goal.
