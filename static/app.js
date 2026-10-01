@@ -1004,3 +1004,155 @@ document.getElementById('jobs-runtime').addEventListener('change', e => { jobsSt
 document.getElementById('jobs-work-type').addEventListener('change', e => { jobsState.workType = e.target.value; jobsFiltersChanged(); });
 document.getElementById('jobs-prev').addEventListener('click', () => { if (jobsState.page > 1) { jobsState.page--; loadJobs(); } });
 document.getElementById('jobs-next').addEventListener('click', () => { jobsState.page++; loadJobs(); });
+
+// ── Export (v1) ───────────────────────────────────────────────────────────────
+// CSV is built here from the JSON export (/api/export/v1/*): same fields, same order. The status line only
+// ever shows a fixed message; response text is never rendered. Contract: docs/export-contract-v1.md.
+const EXPORT_PAGE_LIMIT = 1000;
+const EXPORT_MAX_ROWS = 100000;
+const EXPORT_MAX_DAYS = 92;
+const EXPORT_GENERIC_ERROR = 'Export failed.';
+const EXPORT_ERRORS = {
+  invalid_range: 'Export failed: invalid range',
+  invalid_limit: 'Export failed: invalid limit',
+  invalid_cursor: 'Export failed: invalid cursor',
+  snapshot_expired: 'Data changed during the export; please download again',
+  busy: 'Server busy; try again shortly',
+};
+let exportState = { runId: 0, controller: null };
+
+function exportErrorMessage(code) {
+  return Object.prototype.hasOwnProperty.call(EXPORT_ERRORS, code) ? EXPORT_ERRORS[code] : EXPORT_GENERIC_ERROR;
+}
+
+// The first-page link has no limit or cursor; the download loop passes a cursor (null on page 1).
+function exportUrl(dataset, from, to, cursor) {
+  const params = new URLSearchParams({ from, to });
+  if (cursor !== undefined) {
+    params.set('limit', EXPORT_PAGE_LIMIT);
+    if (cursor) params.set('cursor', cursor);
+  }
+  return `/api/export/v1/${dataset}?${params}`;
+}
+
+function exportInputs() {
+  const fromDate = document.getElementById('export-from').value;
+  const toDate = document.getElementById('export-to').value;
+  return {
+    dataset: document.getElementById('export-dataset').value,
+    fromDate, toDate,
+    from: `${fromDate}T00:00:00Z`,
+    to: `${toDate}T00:00:00Z`,
+  };
+}
+
+// Formula-injection guard and RFC 4180 quoting in one place (AC3.9).
+function csvCell(value) {
+  if (typeof value === 'number') return String(value);
+  let s;
+  if (value === undefined) s = '';  // key absent: not measured / not applicable
+  else if (value === null) s = 'null';  // measured but unknown
+  else if (Array.isArray(value)) s = value.map(v => (v === null ? 'null' : String(v))).join(';');
+  else if (typeof value === 'boolean') s = value ? 'true' : 'false';
+  else s = String(value);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function toCsv(envelope, items) {
+  const fields = envelope.fields;
+  const has = (item, field) => Object.prototype.hasOwnProperty.call(item, field);
+  const lines = [fields.map(csvCell).join(',')];
+  for (const item of items) lines.push(fields.map(f => csvCell(has(item, f) ? item[f] : undefined)).join(','));
+  return '﻿' + lines.join('\r\n') + '\r\n';
+}
+
+class ExportFailure extends Error {}
+
+// Follows next_cursor to the end. Returns null when a newer run superseded this one (it then stops at once).
+async function fetchAllExport(run) {
+  const items = [];
+  const seen = new Set();
+  let cursor = null;
+  let fields = null;
+  for (;;) {
+    if (run.id !== exportState.runId) return null;
+    let response;
+    let body = null;
+    try {
+      response = await fetch(exportUrl(run.dataset, run.from, run.to, cursor), { signal: run.controller.signal });
+      body = await response.json().catch(() => null);
+    } catch (err) {
+      if (run.id !== exportState.runId) return null;
+      throw new ExportFailure(EXPORT_GENERIC_ERROR);  // network failure
+    }
+    if (run.id !== exportState.runId) return null;
+    if (!response.ok) {
+      throw new ExportFailure(exportErrorMessage(body && typeof body.error === 'string' ? body.error : null));
+    }
+    if (!body || !Array.isArray(body.fields) || !Array.isArray(body.items)) throw new ExportFailure(EXPORT_GENERIC_ERROR);
+    fields = fields || body.fields;
+    items.push(...body.items);
+    if (body.complete === true) return { envelope: { fields }, items };
+    if (items.length >= EXPORT_MAX_ROWS) throw new ExportFailure('Too many rows; narrow the range');
+    const next = body.next_cursor;
+    if (!next || seen.has(next)) throw new ExportFailure(EXPORT_GENERIC_ERROR);  // the loop must always progress
+    seen.add(next);
+    cursor = next;
+  }
+}
+
+function downloadCsv(csv, name) {
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function exportCsv() {
+  const status = document.getElementById('export-status');
+  if (exportState.controller) exportState.controller.abort();  // a newer run supersedes the running one
+  const run = { id: ++exportState.runId, controller: new AbortController(), ...exportInputs() };  // frozen params
+  exportState.controller = run.controller;
+  status.textContent = '';
+  const start = Date.parse(run.from);
+  const end = Date.parse(run.to);
+  if (!run.fromDate || !run.toDate || Number.isNaN(start) || Number.isNaN(end) || start >= end) {
+    status.textContent = EXPORT_ERRORS.invalid_range;
+    return;
+  }
+  if (end - start > EXPORT_MAX_DAYS * 86400000) {
+    status.textContent = `Range must be at most ${EXPORT_MAX_DAYS} days`;
+    return;
+  }
+  let result;
+  try {
+    result = await fetchAllExport(run);
+  } catch (err) {
+    if (run.id === exportState.runId) status.textContent = err instanceof ExportFailure ? err.message : EXPORT_GENERIC_ERROR;
+    return;
+  }
+  if (result === null || run.id !== exportState.runId) return;
+  downloadCsv(toCsv(result.envelope, result.items), `ti-export-v1-${run.dataset}-${run.fromDate}-${run.toDate}.csv`);
+  status.textContent = `Fetched ${result.items.length} rows`;
+}
+
+function updateExportLink() {
+  const input = exportInputs();
+  document.getElementById('export-json').href = exportUrl(input.dataset, input.from, input.to);
+}
+
+(function initExportPanel() {
+  const day = 86400000;
+  const to = new Date(Date.now() + day).toISOString().slice(0, 10);  // default: 30 days ending today+1 (UTC)
+  document.getElementById('export-to').value = to;
+  document.getElementById('export-from').value = new Date(Date.parse(to) - 30 * day).toISOString().slice(0, 10);
+  ['export-dataset', 'export-from', 'export-to'].forEach(id =>
+    document.getElementById(id).addEventListener('change', updateExportLink));
+  document.getElementById('export-csv').addEventListener('click', exportCsv);
+  updateExportLink();
+})();

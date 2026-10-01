@@ -250,6 +250,29 @@
           <tbody></tbody>
         </table>
       </div>
+
+      <section id="export-panel" class="export-panel" aria-labelledby="export-title">
+        <h3 id="export-title">Export (v1)</h3>
+        <div class="export-form">
+          <label class="export-field">Dataset
+            <select id="export-dataset" aria-label="Export dataset">
+              <option value="jobs">Jobs</option>
+              <option value="tasks">Tasks</option>
+              <option value="events">LLM calls</option>
+            </select>
+          </label>
+          <label class="export-field">From (UTC, inclusive)
+            <input id="export-from" type="date" aria-label="From date, UTC, inclusive" />
+          </label>
+          <label class="export-field">To (UTC, exclusive)
+            <input id="export-to" type="date" aria-label="To date, UTC, exclusive" />
+          </label>
+          <button id="export-csv" type="button">Download CSV</button>
+          <a id="export-json" href="#" target="_blank" rel="noopener">Open JSON (first page)</a>
+        </div>
+        <p id="export-status" class="status-line" role="status"></p>
+        <p class="status-line">JSON is for machines, CSV for people. Empty cell = not measured; <code>null</code> = unknown; 0 = zero. Contract: docs/export-contract-v1.md.</p>
+      </section>
     </section>
 
     <!-- SETTINGS -->

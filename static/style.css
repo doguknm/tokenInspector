@@ -179,4 +179,17 @@ tr.low-sample td { color: var(--muted); }
 /* The cost cell is where incompleteness shows: the badge says it in words, colour only repeats it. */
 .cost-cell { white-space: nowrap; }
 .badge-warn { background: #451a03; color: var(--yellow); }
+/* EXPORT (v1): a quiet utility panel under the jobs table. */
+.export-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-top: 24px; }
+.export-panel h3 { margin: 0 0 12px; color: var(--text); }
+.export-form { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.export-field { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 12px; }
+.export-panel input[type="date"] {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+  padding: 5px 10px; font-size: 13px; color-scheme: dark;
+}
+.export-panel select { background: var(--bg); }
+#export-json { color: var(--accent); font-size: 13px; padding: 6px 0; }
+#export-json:focus-visible, .export-panel input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.export-panel code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
