@@ -94,6 +94,14 @@ async def test_invalid_pair_not_counted_end_to_end(client):
     (job,) = [j for j in data["items"] if j["job_ref"] == JOB]
     assert job["llm_request_count"] == 2 and job["runtimes"] == ["claude-code@windows"]
     assert data["anomalies"]["invalid_attribution_events"] == 1
+    # the export never infers a runtime for the marked event: it is in no dataset (O9 X4)
+    now = datetime.now(timezone.utc)
+    period = {"from": (now - timedelta(days=1)).isoformat(), "to": (now + timedelta(hours=1)).isoformat()}
+    exported = (await client.get("/api/export/v1/events", params=period)).json()
+    assert sorted(i["client_event_id"] for i in exported["items"]) == ["cc-" + "a" * 32, "legacy"]
+    assert next(i for i in exported["items"] if i["client_event_id"] == "legacy")["runtime_inferred"] is True
+    (exported_job,) = (await client.get("/api/export/v1/jobs", params=period)).json()["items"]
+    assert exported_job["llm_request_count"] == 2
 
 
 async def test_no_event_from_hook_stdin(client, cc, monkeypatch, tmp_path):

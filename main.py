@@ -16,7 +16,7 @@ import jev_scorer
 import retention
 from database import AsyncSessionLocal, DB_PATH, engine, init_db
 from models import PricingRule, SEED_PRICING, _now
-from routes import analytics, events, jobs, meta, settings, tasks
+from routes import analytics, events, export, jobs, meta, settings, tasks
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +91,7 @@ app.include_router(events.router)
 tasks.register_detail_route()
 app.include_router(tasks.router)
 app.include_router(jobs.router)
+app.include_router(export.router)
 app.include_router(analytics.router)
 app.include_router(settings.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
