@@ -44,7 +44,7 @@ _Tool / model / skill per step come from the execution plan chosen at /new-plan 
 | frontend | Claude Code (Opus 5.5, direct, frontend-design) | done (P1 Jobs view `e1cab32`; P3 Export panel `be86f18`) | Phase 1 Jobs view (AC1.6); Phase 3 Export panel (AC3.1, AC3.9). No Phase 2 work |
 | tests-other | Claude Code (Opus 5.5, direct) | done (P2 CM1–CM37: 37/37; P3 XM1–XM25: 25/25 caught) | Written with each backend step; mutation checks PJ*/BJ* (Phase 1), CM* (Phase 2), XM* (Phase 3). Suites locally and on hermes at every checkpoint |
 | tests-e2e | Claude Code (Opus 5.5, direct) | done (P1 `e1cab32`; P3 `be86f18`, FM2–FM3, FM5–FM7: 5/5 caught) | Playwright `-m browser`, own module-scoped servers; Phase 1 Jobs view, Phase 3 CSV download; mutations FM1–FM3. Run after the frontend work of the phase |
-| hermes-review | Hermes (driven by Claude Code) | not started | After all three phases and tests-e2e, before review — spec in `## Hermes Code Review` (spec written at plan lock) |
+| hermes-review | Hermes (driven by Claude Code) | done (r1, 10 parts, 32 findings: 25 fixed, 7 known limitation; `f1ad51d`, `8de894f`, `006451d` / plugin `cb56106`) | After all three phases and tests-e2e, before review — spec in `## Hermes Code Review` (spec written at plan lock) |
 | review | Claude Code (Opus 5.5, direct) | not started | Run last — full integration review (AC → test map across both repos, cross-repo contracts: env contract, tag keys, `parent_project_name`, attribution vectors, `valid_ack`; Deploy Runbook review) |
 
 ## Phase Checkpoints
@@ -105,6 +105,7 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-co
 | Deliverable | Round | Date | Findings | Fixed | Known limitation | Rejected |
 |---|---|---|---|---|---|---|
 | plan | r1 (2 parts: A = summary + database + backend, B = summary + frontend + tests-other + tests-e2e + status) | 2026-09-28 | 41 (A 23, B 18) | 41 (32 fixed + 9 merged into their Part A twin) | 0 | 0 |
+| code | r1 (10 parts: p1–p5 backend code, p6–p9 backend tests, p10 plugin + S1–S4) | 2026-10-01 / 10-02 | 32 (7 HIGH, 21 MEDIUM, 4 LOW; no BLOCKER) | 25 | 7 | 0 |
 
 **Plan review r1 — per finding** (reports: `hermes/o9-job-correlation-cc-producer-plan-r1-A.md`, `-B.md`). Applied by default per the user's 2026-09-28 rule; overlaps resolved once, in the owning lane, and covered by the test lanes. No finding was left unapplied. New user decision created: O13 (hook latency bound).
 
@@ -152,6 +153,43 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-co
 | B-F17 | MEDIUM | fixed — `test_hook_silent_on_success` added and CM10 retargeted; mutation evidence must name the failing assertion | tests-other conventions, AC2.7 rows, CM10 |
 | B-F18 | MEDIUM | fixed — PLAN_BASE (O11), Hermes Code Review spec (O12) and O5 made blocking; stale "pending confirmation" and per-phase deploy wording removed (values left for the orchestrator) | status.md header, Lane Status, Open Items O5/O11/O12, Deploy Runbook; brief AC1.8, Open questions; backend.md S1, J8 |
 
+**Code review r1 — per finding** (reports: `hermes/o9-job-correlation-cc-producer-code-r1-p1.md` … `-p10.md`; triage sheets `hermes/code-r1-triage-p1-p6.md`, `hermes/code-r1-triage-p7-p10.md`). Triage rule B: every finding was presented to the user; the user approved the recommendations (p1–p6 on 2026-10-01, p7–p10 with the instruction to finish the goal on 2026-10-02). p7 failed once with `HTTP 429` on hermes and was resent the next day (not a round). The fixes of groups G3–G5 and p7–p10 were implemented by hermes (code job `20261002-182356-141472`, temporary worktrees), then checked, tested and mutation-checked here; per-group Claude reviews were skipped on the user's instruction (2026-10-02).
+
+| Finding | Severity | Outcome | Where |
+|---|---|---|---|
+| p1-F1 | HIGH | known limitation — model shape rule admits path-/host-like strings; contract residual extended | `docs/export-contract-v1.md` Residual; Known Limitations |
+| p1-F2 | HIGH | fixed (`f1ad51d`) — `/api/jobs` re-applies job ref / runtime / work-type rules on read | `routes/jobs.py`; `test_jobs_legacy_tag_values_never_returned`; RM1–RM3 |
+| p1-F3 | MEDIUM | fixed (`f1ad51d`) — limit length cap, cursor ints bounded to int64 | `routes/export.py`; `test_export_oversized_numbers_rejected`; RM4–RM6 |
+| p2-F1 | HIGH | known limitation — merged with p1-F1 (error_type is any identifier-shaped class name) | as p1-F1 |
+| p2-F2 | MEDIUM | fixed (`8de894f`) — repair backup created exclusively, suffix on a taken name | `scripts/repair_task_parents.py`; `test_repair_backup_never_overwritten_in_same_second`; RM7 |
+| p2-F3 | MEDIUM | known limitation — dashboard export has no 30 s page timeout; a new run supersedes a stalled one | Known Limitations |
+| p2-F4 | LOW | fixed (`006451d`) — contract `role` list includes `evaluator` | `docs/export-contract-v1.md`; `test_export_contract_documented` |
+| p3-F1 | HIGH | known limitation — stale-lock takeover race; bounded by the monotonic checkpoint and backend dedup | Known Limitations |
+| p3-F2 | HIGH | known limitation — a failed-delivery backlog resumed under another job is sent with the new job | Known Limitations |
+| p3-F3 | MEDIUM | fixed (`8de894f`, `006451d`) — installer backup created exclusively; a partial backup is removed after a failed write | `install.py`; `test_installer_backup_never_overwritten_in_same_second`, `test_installer_removes_partial_backup_after_write_failure`; RM8, RM10 |
+| p3-F4 | MEDIUM | fixed (`006451d`) — installer refuses a hook path with shell metacharacters | `install.py`; `test_installer_rejects_shell_metacharacters_in_hook_path`; RM9 |
+| p3-F5 | MEDIUM | fixed (`006451d`) — early watchdog during imports; a failing import exits 0 silently | `cc_hook.py`; `test_hook_import_failure_is_silent_and_fail_open`; RM11 |
+| p4-F1 | HIGH | fixed (`006451d`) — `finish_reason` closed list, else omitted | `cc_events.py`; `test_model_and_finish_reason_value_rules`; RM12 |
+| p4-F2 | MEDIUM | fixed (`006451d`) — normalized host names excluded | `cc_attribution.py`; `test_normalized_hostname_git_root_falls_through`; RM13 |
+| p4-F3 | MEDIUM | known limitation — `tool_call_count` can be low when a group is split after its final-usage line | Known Limitations |
+| p5-F1 | LOW | fixed (`006451d`) — AGENTS.md: conflicting events (calls and tool events) | AGENTS.md Jobs |
+| p5-F2 | LOW | fixed (`006451d`) — `attribution_invalid`: excluded from jobs and the export | CLAUDE.md, AGENTS.md |
+| p6-F1 | MEDIUM | fixed (`006451d`) — FakeServer marks only accepted ids as seen | `tests/cc_support.py`; `test_rejected_unseen_id_can_be_inserted_on_retry` |
+| p6-F2 | MEDIUM | fixed (`006451d`) — production 5 s watchdog test without overrides | `test_production_watchdog_bounds_never_closed_stdin`; RM18 |
+| p6-F3 | MEDIUM | fixed (`006451d`) — state files checked for the canaries | `test_payload_value_canaries` |
+| p6-F4 | MEDIUM | fixed (`006451d`) — submission multiplicity and final offset asserted | `test_concurrent_hooks_state_safe` |
+| p7-F1 | MEDIUM | fixed (`006451d`) — evaluator event with a real task | `test_jobs_exclude_evaluator`; RM15 |
+| p7-F2 | MEDIUM | fixed (`006451d`) — fixture pinned at 722 bytes | `test_worst_case_plugin_tags_accepted` |
+| p7-F3 | LOW | fixed (`006451d`) — bounded reads asserted on an instrumented stream | `test_oversized_line_never_held_whole` |
+| p8-F1 | MEDIUM | fixed (`006451d`) — valid v11 source; refusal observed before any statement (strengthened here after RM16 first survived) | `test_rollback_step_guard_rechecks_version_under_lock`; RM16 |
+| p8-F2 | MEDIUM | fixed (`006451d`) — appended task is on an unread page; its snapshot total asserted | `test_pagination_under_concurrent_ingest`; RM17 |
+| p8-F3 | MEDIUM | fixed (`006451d`) — `provider` path canary across datasets | `test_export_value_canaries` |
+| p9-F1 | MEDIUM | fixed (`006451d`) — launcher teardown removes only its own paths | `test_launcher_env_contract.py` |
+| p9-F2 | MEDIUM | fixed (`006451d`) — a present launcher whose patch does not apply fails unless already patched | `test_launcher_env_contract.py::_launcher` |
+| p9-F3 | MEDIUM | fixed (`006451d`) — distinguishable initial / older / latest responses | `test_jobs_latest_request_wins`; RM19 |
+| p10-F1 | HIGH | fixed (plugin `cb56106`) — `work_type` closed list; `parent_project_name` part = known limitation (hostname-shape residual) | plugin `job.py`; `test_unknown_shape_valid_work_type_never_emitted`; RM14 |
+| p10-F2 | MEDIUM | known limitation — launcher copies do not `unset` inherited job variables (shared files S1–S3, not changed) | Known Limitations |
+
 ## Hermes Code Review
 _Placeholder — the orchestrator writes this spec at /new-plan Step 7b, with PLAN_BASE (backend) and `4b069b4` (plugin) as the diff bases. Scope must cover both repos, the new `producers/claude_code/` tree, the migrations, and the coordinated shared-file diffs (S1–S5)._
 
@@ -183,6 +221,13 @@ Rollback (either part):
 _Review findings the user chose not to fix — one line each: `<plan|code>-review r<N> F<k>: <what> — <why accepted>`._
 
 - brief (resolved before planning): unauthenticated ingest from Windows until the Activation Gate — the CC producer posts over the tailnet without `X-Ingest-Token` while `INGEST_TOKEN` is unset; accepted: single user, local service, tailnet only, "auth minimal" rule; AC2.8 makes the producer ready for a token.
+- code-review r1 p1-F1/p2-F1: the export's model rule and error-class rule are shape rules, so a path-like or host-like model string reported by a provider, or an identifier-shaped exception class name, is exported as is — accepted: values come from provider responses and normalized tags; the contract's residual paragraph states it.
+- code-review r1 p2-F3: the dashboard export has no per-page 30 s timeout — accepted: single user; starting a new export supersedes and aborts a stalled run.
+- code-review r1 p3-F1: two hooks that see the same stale lock at the same instant can both take it over — accepted: the checkpoint never moves backwards for the same file identity and the backend deduplicates by `client_event_id`, so the worst case is a duplicate POST, never a double count.
+- code-review r1 p3-F2: a backlog left by a failed delivery is sent with the context (job) of the next hook on that transcript, so a transcript resumed under another job before the next successful hook tags the old calls with the new job — accepted: needs a failed delivery plus a resume under another job; no backlog boundary exists without a state-schema change.
+- code-review r1 p4-F3: when a window ends right after a group's final-usage line and a later line of the same message carries another tool id, `tool_call_count` is low by that tool — accepted: tokens and cost are correct; not observed in the C0 corpus (18 640 groups); changing the C0 finality rule is out of scope.
+- code-review r1 p10-F1 (part): `parent_project_name` is a normalized project name, so a project folder named like a host is sent as is — accepted: same hostname-shape residual as `project_name` (export contract).
+- code-review r1 p10-F2: the launcher copies (S1–S3) export the validated job variables but do not `unset` inherited `TOKEN_INSPECTOR_JOB_*` values — accepted: the runner starts from a fresh non-interactive ssh shell where these are not set; changing the shared launcher copies needs a separate user decision.
 
 ## Open Items
 | # | Item | Owner | Blocks |
@@ -344,3 +389,22 @@ Runner: scratchpad `mutate_r1.py` (`__main__` guard, `encoding="utf-8", errors="
 | RM6 | p1-F3 | `routes/export.py` — cursor `k` int64 range check removed | caught | `test_export_oversized_numbers_rejected` |
 | RM7 | p2-F2 | `scripts/repair_task_parents.py` — backup reserved without `O_EXCL` | caught | `test_repair_backup_never_overwritten_in_same_second` (tests/test_repair_task_parents.py) |
 | RM8 | p3-F3 | `producers/claude_code/install.py` — backup opened with `wb` instead of `xb` | caught | `test_installer_backup_never_overwritten_in_same_second` (tests/test_cc_install.py) |
+| RM9 | p3-F4 | `install.py` — shell-metacharacter guard removed | caught | `test_installer_rejects_shell_metacharacters_in_hook_path` (tests/test_cc_install.py) |
+| RM10 | p3-F3 | `install.py` — partial backup not removed after a failed write | caught | `test_installer_removes_partial_backup_after_write_failure` |
+| RM11 | p3-F5 | `cc_hook.py` — failing producer import re-raised instead of a silent exit 0 | caught | `test_hook_import_failure_is_silent_and_fail_open` (tests/test_cc_hook.py) |
+| RM12 | p4-F1 | `cc_events.py` — any string kept as `finish_reason` | caught | `test_model_and_finish_reason_value_rules` (tests/test_cc_events.py) |
+| RM13 | p4-F2 | `cc_attribution.py` — normalized host names not added | caught | `test_normalized_hostname_git_root_falls_through` (tests/test_cc_attribution.py) |
+| RM14 | p10-F1 | plugin `job.py` — any non-empty work type kept | caught | plugin `test_job_env_invalid_work_type_dropped` (tests/test_job_tags.py) |
+| RM15 | p7-F1 | `routes/jobs.py` — evaluator predicate removed from `_COUNTED` | caught | `test_jobs_exclude_evaluator` (tests/test_jobs_api.py) |
+| RM16 | p8-F1 | `scripts/rollback_schema.py` — in-transaction source-version guard skipped | caught (survived the hermes version of the test; the test now records the columns at the guard read) | `test_rollback_step_guard_rechecks_version_under_lock` (tests/test_migration_v11.py) |
+| RM17 | p8-F2 | `routes/export.py` — task snapshot filter `ingest_seq <= :as_of` removed | caught | `test_pagination_under_concurrent_ingest` (tests/test_export_pagination.py) |
+| RM18 | p6-F2 | `cc_hook.py` — `HOOK_BOUND_S` 5 → 60 | caught | `test_production_watchdog_bounds_never_closed_stdin` |
+| RM19 | p9-F3 | `static/app.js` — latest-request generation check removed | caught | `test_jobs_latest_request_wins` (tests/browser/test_jobs_view.py) |
+
+Code review r1 fix mutations: **19/19 caught** (RM1–RM19), originals verified after every run; no code file left modified.
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-10-02 | Windows suites after the code-r1 fixes | backend **546 passed** (incl. browser; first run 545 + 1 flaky, see next row); plugin **213 passed, 2 skipped** |
+| 2026-10-02 | Flake `test_truncated_or_replaced_transcript_resets` | 1 of 12 standalone runs failed: the bare `"a3"` check matched inside a random sha256 pseudonym; the check now looks for the quoted JSON string; 15/15 passed (CLAUDE.md RP 21) |
+| 2026-10-02 | hermes code job (worktrees `/tmp/o9-code/`) | backend 491 passed, 15 skipped (`-m "not browser"`); plugin 215 passed — before the RM16 test strengthening and the flake fix |

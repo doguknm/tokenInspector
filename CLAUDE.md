@@ -213,3 +213,8 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
    - **Symptoms:** A Playwright test errors inside `_impl_to_api_mapping.py` as soon as an event fires; or a downloaded CSV cell that holds a carriage return compares unequal after `csv.reader`.
    - **Root cause:** Playwright's sync API attaches bookkeeping to the handler object, which a builtin bound method such as `list.append` cannot hold; and `open()` without `newline=""` translates `\r` to `\n` before `csv.reader` sees it.
    - **Fix/check:** Pass `lambda d: downloads.append(d)` (a Python function) to `page.on(...)`; read downloaded CSV files with `open(path, encoding="utf-8", newline="")` (`tests/browser/test_export_download.py`).
+
+21. **`test_truncated_or_replaced_transcript_resets` fails about 1 run in 12 with `'a3' is contained here`**
+   - **Symptoms:** The CC hook truncation test fails on `"a3" not in json.dumps(server.events())`, although no raw message id was sent; a rerun passes.
+   - **Root cause:** Event and session ids are sha256 pseudonyms in hex. A two-character canary such as `a3` occurs inside a random 64-hex-digit pseudonym by chance.
+   - **Fix/check:** Fixed 2026-10-02: the check looks for the quoted JSON string `'"a3"'`. Any absence check for a short id must look for the quoted value (or use a canary that cannot be hex, e.g. `zz-...`), never a bare hex-like substring.
