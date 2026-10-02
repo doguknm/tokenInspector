@@ -342,3 +342,5 @@ Runner: scratchpad `mutate_r1.py` (`__main__` guard, `encoding="utf-8", errors="
 | RM4 | p1-F3 | `routes/export.py` — `limit` length cap removed | caught | `test_export_oversized_numbers_rejected` (tests/test_export_contract.py) |
 | RM5 | p1-F3 | `routes/export.py` — cursor `s`/`r` int64 range check removed | caught | `test_export_oversized_numbers_rejected` |
 | RM6 | p1-F3 | `routes/export.py` — cursor `k` int64 range check removed | caught | `test_export_oversized_numbers_rejected` |
+| RM7 | p2-F2 | `scripts/repair_task_parents.py` — backup reserved without `O_EXCL` | caught | `test_repair_backup_never_overwritten_in_same_second` (tests/test_repair_task_parents.py) |
+| RM8 | p3-F3 | `producers/claude_code/install.py` — backup opened with `wb` instead of `xb` | caught | `test_installer_backup_never_overwritten_in_same_second` (tests/test_cc_install.py) |

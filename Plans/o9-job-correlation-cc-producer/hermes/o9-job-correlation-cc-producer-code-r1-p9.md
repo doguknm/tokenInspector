@@ -1,0 +1,15 @@
+# Hermes code review r1 — part 9 of 10
+
+TAG: `o9-job-correlation-cc-producer-code-r1-p9` · prompt: backend tests 4/4 — browser, repair, launcher env contract, small updates.
+
+FINDINGS:
+F1 [MEDIUM] tests/test_launcher_env_contract.py:work teardown — Cleanup deletes files outside the fixture’s owned directory using `/tmp/hermes_*o9t*` — scenario: two launcher-test workers run concurrently; one finishes and removes the other’s matching runner or prompt files before its stub agent consumes them → unrelated test fails or loses its artifacts — fix: track and remove only this invocation’s exact paths; remove the shared wildcard cleanup.
+F2 [MEDIUM] tests/test_launcher_env_contract.py:_launcher — A shared patch becoming inapplicable is converted into a skip, hiding a broken launcher-contract check — scenario: an S2/S3 launcher exists but changes enough that its pending O9 patch fails to apply → every affected contract case skips rather than exposing the integration regression — fix: retain skips for genuinely absent external files, but fail when a present launcher cannot accept the required patch. Testing temporary patched copies is an accepted deviation; suppressing patch failures is the issue.
+F3 [MEDIUM] tests/browser/test_jobs_view.py:test_jobs_latest_request_wins — The expected final table is identical to the table already loaded before either competing request, so the test does not establish that the latest response was applied — scenario: a regression discards all subsequent filter responses → the original five rows remain, no error appears, and this test passes despite a nonfunctional reload path — fix: start with a distinct initial result, return distinguishable older/latest results, synchronize their completion, and assert that the latest result replaces the initial table and survives the late response.
+UNSURE:
+- Production implementations and the remaining test parts are not supplied here; dedup authority, value-level export privacy, snapshot/high-water stability, migration/rollback, hook latency/concurrency and installer ownership cannot be verified from this part.
+- Repair tests exercise reanalysis and rollback scenarios, but the “revalidates under write lock” test inserts changes before the transaction; by itself it does not prove a writer cannot intervene between revalidation and updates. Actual locking and repair-triggered export revision invalidation require the implementation or other tests.
+- The supplied Jobs browser tests do not assert displayed attempts, first/last timestamps, estimated-cost values or nonzero cache sums. Whether other tests cover these AC1.6 requirements is unknown.
+- `test_docs_export.py` checks field-name and phrase presence, not dataset-specific definitions or semantic agreement with the router; documentation correctness requires the actual document and implementation.
+- No tests were executed, repository copies inspected, or PEGA calls attempted; this assessment is static and limited to the supplied content.
+VERDICT: Changes requested for test isolation and false-green contract coverage; this part does not establish a production-code defect.

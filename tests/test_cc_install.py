@@ -179,3 +179,23 @@ def test_installer_takes_possibleskills_lock(inst, tmp_path, monkeypatch):
     assert (tmp_path / "settings.json.lock-possibleskills").exists()
     inst.run(settings, apply=True, uninstall=False)  # released: the next apply goes through
     assert json.loads(settings.read_bytes())["hooks"]["SessionEnd"]
+
+
+def test_installer_backup_never_overwritten_in_same_second(inst, tmp_path, monkeypatch):
+    """code-r1 p3-F3: install then uninstall within one UTC second keeps the pre-install backup."""
+    import datetime as dt
+
+    class FixedClock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 10, 2, 12, 0, 0, tzinfo=dt.timezone.utc)
+
+    monkeypatch.setattr(inst, "datetime", FixedClock)
+    settings = tmp_path / "settings.json"
+    write(settings, foreign_settings())
+    inst.run(settings, apply=True, uninstall=False)
+    inst.run(settings, apply=True, uninstall=True)
+    backups = sorted(tmp_path.glob("settings.json.bak-ti-*"))
+    assert len(backups) == 2
+    assert json.loads(backups[0].read_bytes()) == foreign_settings()  # the pre-install copy survives
+    assert json.loads(backups[1].read_bytes())["hooks"]["SessionEnd"]

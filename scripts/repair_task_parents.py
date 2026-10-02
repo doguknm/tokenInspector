@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sqlite3
 import sys
 from contextlib import closing
@@ -174,10 +175,22 @@ def _counts(conn: sqlite3.Connection) -> tuple[int, int]:
             conn.execute("SELECT COUNT(*) FROM token_events").fetchone()[0])
 
 
+def _reserve(base: Path) -> Path:
+    """Create the backup file exclusively: a second run in the same second never overwrites a backup."""
+    for n in range(100):
+        candidate = base.with_name(f"{base.name}-{n}") if n else base
+        try:
+            os.close(os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return candidate
+        except FileExistsError:
+            continue
+    raise RepairError("backup name could not be reserved; nothing was changed")
+
+
 def backup(db: Path, backup_dir: Path | None) -> Path:
     """Online backup verified against its own snapshot: before <= backup <= after (no path deletes rows)."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    target = (backup_dir or db.parent) / f"{db.name}.bak-repair-{stamp}"
+    target = _reserve((backup_dir or db.parent) / f"{db.name}.bak-repair-{stamp}")
     with closing(sqlite3.connect(db)) as src:
         src.execute("PRAGMA busy_timeout=5000")
         before = _counts(src)

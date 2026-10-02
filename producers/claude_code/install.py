@@ -202,11 +202,18 @@ def run(settings: Path, *, apply: bool, uninstall: bool, platform: str = sys.pla
             raise InstallError("settings file changed since it was read (another session?); nothing written")
         if settings.exists():
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            backup = settings.with_name(f"{settings.name}.bak-ti-{stamp}")
-            try:
-                backup.write_bytes(raw)
-            except OSError:
-                raise InstallError("backup could not be written; nothing changed") from None
+            for n in range(100):  # exclusive: a second apply in the same second never overwrites a backup
+                backup = settings.with_name(f"{settings.name}.bak-ti-{stamp}" + (f"-{n}" if n else ""))
+                try:
+                    with open(backup, "xb") as fh:
+                        fh.write(raw)
+                    break
+                except FileExistsError:
+                    continue
+                except OSError:
+                    raise InstallError("backup could not be written; nothing changed") from None
+            else:
+                raise InstallError("backup could not be written; nothing changed")
         _write_atomic(settings, payload)
     return counts
 

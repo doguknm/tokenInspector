@@ -290,3 +290,24 @@ async def test_repair_failure_is_atomic(tmp_path, monkeypatch, capsys):
     assert repair.main(["--db", str(path), "--apply"]) == 1
     assert len(checks) == 3 and state(path) == before
     assert "hermes" not in capsys.readouterr().err
+
+
+async def test_repair_backup_never_overwritten_in_same_second(tmp_path, monkeypatch):
+    """code-r1 p2-F2: two backups within one UTC second get distinct names; the first stays untouched."""
+    import datetime as dt
+
+    class FixedClock(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2026, 10, 2, 12, 0, 0, tzinfo=dt.timezone.utc)
+
+    monkeypatch.setattr(repair, "datetime", FixedClock)
+    path = await build(tmp_path / "db.sqlite", main_rows())
+    first = repair.backup(path, tmp_path)
+    first_bytes = first.read_bytes()
+    with closing(sqlite3.connect(path)) as writer:
+        writer.execute(f"INSERT INTO tasks ({COLS}) VALUES (?, 'z', 's', 't', NULL, NULL, 'root', 'ingest', "
+                       "'x', 'x', 0, 'x', 'x')", (REF("z", "s", "t"),))
+        writer.commit()
+    second = repair.backup(path, tmp_path)
+    assert second != first and second.exists() and first.read_bytes() == first_bytes
