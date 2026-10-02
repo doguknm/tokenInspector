@@ -98,6 +98,7 @@ _Append here when any lane discovers the spec is wrong. Do not edit lane files m
   - X4 value rules not named in backend.md: `provider` uses the safe-id rule (`p-` pseudonym otherwise); closed lists `role` = `primary`, `subagent`, `evaluator` (else `other`), `hierarchy_status` = `root`, `child`, `unknown`, `complexity_method` = `request-shape-v1` (else absent). A job row whose `job_ref` fails `JOB_REF_RE` is skipped (stored refs are already normalized). All documented in `docs/export-contract-v1.md`.
   - Frontend: `from >= to` (or an empty date) shows the closed message "Export failed: invalid range" (the closed set has no separate text for it); "Range must be at most 92 days" for a longer span. The row cap stops when 100 000 rows were fetched and more remain, so no request is made past the cap.
   - Tests: `test_v10_v12_old_code_round_trip` calls `routes.export._export` with a session on its own temp DB (the app engine is bound to the suite DB); `test_cursor_ignores_rows_after_delete_and_reingest` holds the cursor half of AC-DB3.3; `test_invalid_pair_not_counted_end_to_end` (Phase 2) gained export assertions for XM23.
+- 2026-10-02 — **AC-DB1.3 vs AC-DB3.5 (integration review):** AC-DB1.3 (Phase 1) asks the runner to refuse v12 → v10 without a separate v12 → v11 call; AC-DB3.5 (Phase 3) asks for the chained rollback in one call. The later criterion AC-DB3.5 is in force: `rollback_schema.py --to 10` runs v12 → v11 → v10 in reverse order, each step guarded by the exact source version (`test_rollback_runner_guards`). The Deploy Runbook still gives the two steps as separate commands (I2).
 
 ## Hermes Reviews
 _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-correlation-cc-producer/hermes/. This plan's brief sets 1 round for the plan and 1 for the code._
@@ -190,6 +191,16 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-co
 | p10-F1 | HIGH | fixed (plugin `cb56106`) — `work_type` closed list; `parent_project_name` part = known limitation (hostname-shape residual) | plugin `job.py`; `test_unknown_shape_valid_work_type_never_emitted`; RM14 |
 | p10-F2 | MEDIUM | known limitation — launcher copies do not `unset` inherited job variables (shared files S1–S3, not changed) | Known Limitations |
 
+**Integration review — per finding** (report: `hermes/o9-job-correlation-cc-producer-integration-review.md`; read-only `hermes chat` job with the model and provider the user named for it, 2026-10-02, detached worktrees at backend `687b842` / plugin `cb56106`, removed afterwards). Contracts b–e OK except I1; `test_attribution_vectors_identical` and the plugin vector runner executed (not skipped) and passed. Triage rule B: the user approved the recommendations on 2026-10-02.
+
+| Finding | Severity | Outcome | Where |
+|---|---|---|---|
+| I1 | MEDIUM | approved fix — pending (hermes code job #69 stopped with `HTTP 429`, no change made): CC producer `work_type` closed list as in the plugin and backend, payload/state canary, ADR-003 wording | `producers/claude_code/cc_config.py` `job_tags()` |
+| I2 | MEDIUM | approved fix — pending (same job): Rollback step 3 as two explicit `rollback_schema.py` commands, run from the O9 checkout before the code moves back | status.md Deploy Runbook, Rollback 3 |
+| GAP AC1.6 | — | approved fix — pending (same job): Jobs browser test asserts attempts, first/last time, estimated cost and distinct non-zero cache cells | `tests/browser/test_jobs_view.py` |
+| GAP AC-DB1.2 | — | known limitation — no migration test on a copy of the demo seed DB | Known Limitations |
+| GAP AC-DB1.3 | — | known limitation (old-code compatibility tested with a hand-written v10-shaped INSERT); the v12 → v10 refusal vs chaining contradiction resolved in the Drift Log (AC-DB3.5 wins) | Known Limitations; Drift Log 2026-10-02 |
+
 ## Hermes Code Review
 _Placeholder — the orchestrator writes this spec at /new-plan Step 7b, with PLAN_BASE (backend) and `4b069b4` (plugin) as the diff bases. Scope must cover both repos, the new `producers/claude_code/` tree, the migrations, and the coordinated shared-file diffs (S1–S5)._
 
@@ -228,6 +239,8 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 - code-review r1 p4-F3: when a window ends right after a group's final-usage line and a later line of the same message carries another tool id, `tool_call_count` is low by that tool — accepted: tokens and cost are correct; not observed in the C0 corpus (18 640 groups); changing the C0 finality rule is out of scope.
 - code-review r1 p10-F1 (part): `parent_project_name` is a normalized project name, so a project folder named like a host is sent as is — accepted: same hostname-shape residual as `project_name` (export contract).
 - code-review r1 p10-F2: the launcher copies (S1–S3) export the validated job variables but do not `unset` inherited `TOKEN_INSPECTOR_JOB_*` values — accepted: the runner starts from a fresh non-interactive ssh shell where these are not set; changing the shared launcher copies needs a separate user decision.
+- integration review GAP AC-DB1.2: no migration test runs on a copy of the demo seed DB; v11/v12 migrations are tested on rollback-generated v10/v11 fixtures — accepted: the fixtures carry the same schema, and prod upgrades take a verified backup first (runbook step 2).
+- integration review GAP AC-DB1.3: old-code compatibility of a v11 DB is tested with a hand-written INSERT shaped like v10 `_upsert_task`, not with the v10 code itself — accepted: the v10 code is not importable next to the current code in one test process.
 
 ## Open Items
 | # | Item | Owner | Blocks |
