@@ -87,6 +87,9 @@ def test_model_and_finish_reason_value_rules(cc, tmp_path):
     assert build(cc, one_record(cc, tmp_path / "b", model="claude-opus-4-5"))["model"] == "claude-opus-4-5"
     ev = build(cc, one_record(cc, tmp_path / "c", stop="Bad Stop /x"))
     assert "finish_reason" not in ev
+    canary = "zz_canary_secret"
+    ev = build(cc, one_record(cc, tmp_path / "unknown", stop=canary))
+    assert "finish_reason" not in ev and canary not in json.dumps(ev)
     assert build(cc, one_record(cc, tmp_path / "d"))["finish_reason"] == "end_turn"
 
 

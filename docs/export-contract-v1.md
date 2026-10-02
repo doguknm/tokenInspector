@@ -159,7 +159,7 @@ They are never collapsed into each other. Units: token counts are integers; cost
 | `attempt` | integer | per-call retry attempt | never absent | — |
 | `retry_count` | integer | retries | never absent | — |
 | `tool_call_count` | integer | tool calls requested by the response | `null` when not reported | — |
-| `role` | string | `primary`, `subagent` (else `other`) | `null` when none | closed list |
+| `role` | string | `primary`, `subagent`, `evaluator` (else `other`); `evaluator` appears only for non-excluded events | `null` when none | closed list |
 | `complexity` | integer | deterministic tier 1–5 | `null` when not scored | — |
 | `complexity_method` | string | `request-shape-v1` | **absent** for any other or no method | closed list |
 
@@ -254,7 +254,9 @@ A key allowlist is not enough, so every exported string also passes a value rule
 **Residual (value privacy).** A single-label string that happens to equal a machine's short host
 name — or a host-like model name such as `my-host.internal` — cannot be told apart from an id, a
 model or a repository name by its shape. The Claude Code producer rejects project names equal to the
-local host name or FQDN or shaped like an IPv4 address; other fields carry this residual.
+local host name or FQDN or shaped like an IPv4 address; other fields carry this residual. The model
+rule is a shape rule, so a relative path-like or host-like model string reported by a provider passes
+it, and an `error_type` is any identifier-shaped exception class name.
 
 ## Stable ids and the consumer dedup rule
 

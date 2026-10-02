@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 from cc_support import Transcript, modules, set_home, subagent_path
@@ -180,11 +182,19 @@ def test_oversized_line_never_held_whole(cc, tmp_path, monkeypatch):
     tr = cc["cc_transcript"]
     monkeypatch.setattr(tr, "CHUNK", 1024)
     monkeypatch.setattr(tr, "OVERSIZED_LINE_MAX", 4096)
-    path = tmp_path / "big.jsonl"
-    path.write_bytes(b'{"a":"' + b"z" * 100_000 + b'"}\n')
-    with open(path, "rb") as fh:
-        kind, raw, size = tr._read_line(fh)
-    assert kind == "oversized" and raw is None and size == path.stat().st_size
+    payload = b'{"a":"' + b"z" * 100_000 + b'"}\n'
+
+    class BoundedStream(io.BytesIO):
+        def read(self, size=-1):
+            assert 0 <= size <= tr.CHUNK
+            return super().read(size)
+
+        def readline(self, size=-1):
+            assert 0 <= size <= tr.CHUNK
+            return super().readline(size)
+
+    kind, raw, size = tr._read_line(BoundedStream(payload))
+    assert kind == "oversized" and raw is None and size == len(payload)
 
 
 def test_subagent_records_carry_parent_prompt_and_run_id(cc, tmp_path):

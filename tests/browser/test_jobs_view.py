@@ -243,21 +243,32 @@ def test_jobs_conflict_counts(page):
 
 # The late response ignores the abort signal (a server that answered before the abort landed), so only
 # the generation check can keep it off the table.
-DELAY_FILTERED = """(ms) => {
+STUB_OUT_OF_ORDER = """({ms, older, latest}) => {
   const real = window.fetch.bind(window);
-  window.fetch = (url, opts) => /runtime=hermes-agent/.test(String(url))
-    ? new Promise(r => setTimeout(r, ms)).then(() => real(url))
-    : real(url, opts);
+  window.fetch = (url, opts) => {
+    if (!/\/api\/jobs\?/.test(String(url))) return real(url, opts);
+    const filtered = /runtime=hermes-agent/.test(String(url));
+    const response = () => new Response(JSON.stringify(filtered ? older : latest), {
+      status: 200, headers: {'Content-Type': 'application/json'}
+    });
+    return filtered ? new Promise(resolve => setTimeout(() => resolve(response()), ms))
+                    : Promise.resolve(response());
+  };
 }"""
 
 
 def test_jobs_latest_request_wins(page):
     _open(page)
-    page.evaluate(DELAY_FILTERED, 1500)
+    assert _row(page, J111).count() == 1  # distinguish the initial real table
+    older_ref, latest_ref = "20260928-150000-901", "20260928-150000-902"
+    page.evaluate(STUB_OUT_OF_ORDER, {"ms": 1500, "older": _body([_job(older_ref)]),
+                                      "latest": _body([_job(latest_ref)])})
     page.select_option("#jobs-runtime", "hermes-agent")
     page.select_option("#jobs-runtime", "")
+    page.wait_for_function(f"document.querySelector('{ROWS} .job-ref').textContent.includes('{latest_ref}')")
+    assert _row(page, latest_ref).count() == 1 and _row(page, J111).count() == 0
     page.wait_for_timeout(2500)
-    assert page.locator(ROWS).count() == 5  # the unfiltered result, not the late filtered one (4 rows)
+    assert _row(page, latest_ref).count() == 1 and _row(page, older_ref).count() == 0
     assert not _visible(page, "#jobs-error")
 
 

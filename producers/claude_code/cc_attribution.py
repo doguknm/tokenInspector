@@ -107,11 +107,13 @@ def _host_names() -> set[str]:
     names: set[str] = set()
     try:
         host = socket.gethostname().strip().lower()
-        if host:
-            names.update({host, host.split(".", 1)[0]})
         fqdn = socket.getfqdn().strip().lower()
-        if fqdn:
-            names.add(fqdn)
+        for value in (host, host.split(".", 1)[0], fqdn):
+            if value:
+                names.add(value)
+                normalized = normalize_name(value)
+                if normalized is not None:
+                    names.add(normalized)
     except Exception:
         pass
     return names

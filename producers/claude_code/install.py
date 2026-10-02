@@ -181,7 +181,10 @@ def _write_atomic(path: Path, payload: bytes) -> None:
 
 
 def run(settings: Path, *, apply: bool, uninstall: bool, platform: str = sys.platform) -> dict[str, int]:
-    command = hook_command(platform)
+    hook_path = HOOK_PATH
+    if any(char in hook_path.as_posix() for char in '$`"%!\n'):
+        raise InstallError("hook path contains shell metacharacters; nothing changed")
+    command = hook_command(platform, hook_path)
 
     def plan() -> tuple[bytes, bytes, dict[str, int]]:
         raw = _read(settings)
@@ -211,6 +214,10 @@ def run(settings: Path, *, apply: bool, uninstall: bool, platform: str = sys.pla
                 except FileExistsError:
                     continue
                 except OSError:
+                    try:
+                        backup.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                     raise InstallError("backup could not be written; nothing changed") from None
             else:
                 raise InstallError("backup could not be written; nothing changed")

@@ -23,7 +23,8 @@ ALLOWED_FIELDS = frozenset({
 })
 TAG_KEYS = frozenset({"runtime", "producer", "job_ref", "work_type", "job_attempt", "project_source", "schema"})
 MODEL_RE = re.compile(r"^claude-[a-z0-9.-]{1,64}$")
-FINISH_RE = re.compile(r"^[a-z_]{1,32}$")
+FINISH_REASONS = ("end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", "refusal",
+                  "model_context_window_exceeded")
 PROJECT_SOURCES = ("alias", "git_remote", "git_root", "fallback")
 
 
@@ -79,7 +80,7 @@ def build_event(
     occurred = _occurred_at(record.timestamp)
     if occurred:
         event["occurred_at"] = occurred
-    if isinstance(record.stop_reason, str) and FINISH_RE.fullmatch(record.stop_reason):
+    if record.stop_reason in FINISH_REASONS:
         event["finish_reason"] = record.stop_reason
     if subagent:
         if not record.agent_raw or not record.turn_key:

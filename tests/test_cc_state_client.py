@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,9 @@ def test_concurrent_hooks_state_safe(cc, home, tmp_path, monkeypatch):
         srv.mode = "accept"
         run_hook_subprocess(stdin_bytes("Stop", t.path, str(tmp_path)), dict(env, TI_CC_HOOK_BOUND_S="5"))
         assert len(srv.seen) == 3  # nothing lost after a third run
+        assert Counter(srv.submissions) == Counter({event_id: 1 for event_id in srv.seen})
+        key = st.key_for(str(t.path))
+        assert st.load(sdir(cc), key)["offset"] == t.path.stat().st_size
     finally:
         srv.close()
     key = st.key_for(str(t.path))
@@ -190,6 +194,19 @@ def test_ack_validation_expected_values(cc):
     assert valid({"inserted": 1, "duplicates": 1, "rejected": 0}, 2)
     assert not valid({"inserted": True, "duplicates": 1, "rejected": 0}, 2)
     assert not valid({"inserted": 1, "duplicates": 0, "rejected": 0}, 2)
+
+
+def test_rejected_unseen_id_can_be_inserted_on_retry(cc):
+    srv = FakeServer()
+    event = {"client_event_id": "cc-" + "1" * 32}
+    try:
+        srv.rejected_next = 1
+        first = cc["cc_client"].post_batch(srv.url, None, "proj", [event])
+        second = cc["cc_client"].post_batch(srv.url, None, "proj", [event])
+        assert (first["inserted"], first["rejected"], second["inserted"], second["duplicates"]) == (0, 1, 1, 0)
+        assert srv.seen == {event["client_event_id"]: "proj"}
+    finally:
+        srv.close()
 
 
 def test_token_optional_and_never_logged(cc, home, tmp_path, monkeypatch, caplog, capsys):

@@ -18,18 +18,28 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, BinaryIO, Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import cc_attribution  # noqa: E402
-import cc_client  # noqa: E402
-import cc_config  # noqa: E402
-import cc_events  # noqa: E402
-import cc_state  # noqa: E402
-import cc_transcript  # noqa: E402
-
 HOOK_BOUND_S = 5.0
 SEND_DEADLINE_S = 2.5
 DRAIN_LIST_MAX = 200
+_EARLY_WATCHDOG = None
+if __name__ == "__main__":
+    _EARLY_WATCHDOG = threading.Timer(HOOK_BOUND_S, os._exit, args=(0,))
+    _EARLY_WATCHDOG.daemon = True
+    _EARLY_WATCHDOG.start()
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    import cc_attribution  # noqa: E402
+    import cc_client  # noqa: E402
+    import cc_config  # noqa: E402
+    import cc_events  # noqa: E402
+    import cc_state  # noqa: E402
+    import cc_transcript  # noqa: E402
+except BaseException:
+    if __name__ == "__main__":
+        os._exit(0)
+    raise
 _TEST_OVERRIDES = {  # read only when TI_CC_TEST_MODE=1 (subprocess tests)
     "TI_CC_HOOK_BOUND_S": ("cc_hook", "HOOK_BOUND_S", float),
     "TI_CC_SEND_DEADLINE_S": ("cc_hook", "SEND_DEADLINE_S", float),
@@ -232,6 +242,8 @@ def main(stdin: Optional[BinaryIO] = None) -> int:
         watchdog = threading.Timer(HOOK_BOUND_S, os._exit, args=(0,))
         watchdog.daemon = True
         watchdog.start()  # first: a blocked stdin is bounded too
+        if _EARLY_WATCHDOG is not None:
+            _EARLY_WATCHDOG.cancel()
         _run(start, stdin if stdin is not None else sys.stdin.buffer)
     except BaseException:
         pass

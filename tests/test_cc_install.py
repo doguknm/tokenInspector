@@ -199,3 +199,44 @@ def test_installer_backup_never_overwritten_in_same_second(inst, tmp_path, monke
     assert len(backups) == 2
     assert json.loads(backups[0].read_bytes()) == foreign_settings()  # the pre-install copy survives
     assert json.loads(backups[1].read_bytes())["hooks"]["SessionEnd"]
+
+
+def test_installer_removes_partial_backup_after_write_failure(inst, tmp_path, monkeypatch):
+    settings = tmp_path / "settings.json"
+    raw = write(settings, foreign_settings())
+    real_open = open
+
+    class FailingBackup:
+        def __init__(self, path, mode):
+            self.fh = real_open(path, mode)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.fh.close()
+
+        def write(self, payload):
+            raise OSError("synthetic backup failure")
+
+    def failing_open(path, mode="r", *args, **kwargs):
+        if ".bak-ti-" in str(path):
+            return FailingBackup(path, mode)
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", failing_open)
+    with pytest.raises(inst.InstallError, match="backup could not be written; nothing changed"):
+        inst.run(settings, apply=True, uninstall=False)
+    assert settings.read_bytes() == raw
+    assert not list(tmp_path.glob("settings.json.bak-ti-*"))
+
+
+@pytest.mark.parametrize("uninstall", [False, True])
+def test_installer_rejects_shell_metacharacters_in_hook_path(inst, tmp_path, monkeypatch, uninstall):
+    settings = tmp_path / "settings.json"
+    raw = write(settings, foreign_settings())
+    monkeypatch.setattr(inst, "HOOK_PATH", tmp_path / "$HOME" / "cc_hook.py")
+    with pytest.raises(inst.InstallError, match="hook path contains shell metacharacters; nothing changed"):
+        inst.run(settings, apply=True, uninstall=uninstall)
+    assert settings.read_bytes() == raw
+    assert not list(tmp_path.glob("settings.json.bak-ti-*"))

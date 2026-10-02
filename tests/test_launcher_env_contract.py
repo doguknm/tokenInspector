@@ -78,7 +78,7 @@ def work():
     (native / "repo").mkdir()
     (native / "prompt.txt").write_text("zz synthetic prompt\n", encoding="utf-8")
     yield posix, native
-    _sh(f"rm -rf '{posix}' /tmp/hermes_*o9t*")
+    _sh(f"rm -rf '{posix}'")
     shutil.rmtree(native, ignore_errors=True)
 
 
@@ -96,7 +96,7 @@ def _launcher(copy: str, native: Path) -> Path:
     target.write_bytes(text)
     applied = _sh(f"cd '{_posix(native)}' && patch -s -o '{copy}.patched.sh' '{copy}.sh' < '{_posix(PATCHES / patch)}'")
     if applied.returncode != 0:
-        pytest.skip(f"{copy}: owner's file changed; O9 patch no longer applies (re-derive the patch)")
+        pytest.fail("launcher O9 patch does not apply")
     return native / f"{copy}.patched.sh"
 
 
@@ -130,8 +130,11 @@ def _run(copy, work, command, work_type=None, attempt=None):
     got = dict(line.split("=", 1) for line in lines)
     match = re.search(r"job=(\S+)", run.stdout)
     assert match, "launch line must carry job=<id>"
-    if JOB_REF_RE.fullmatch(match.group(1)):  # the S2/S3 copies name their /tmp files after the job
-        _sh(f"rm -f /tmp/hermes_{match.group(1)}.*")
+    for created in Path("/tmp").glob(f"hermes_*{tag}*"):
+        if created.is_dir():
+            shutil.rmtree(created, ignore_errors=True)
+        else:
+            created.unlink(missing_ok=True)
     return got, match.group(1), run.stdout
 
 

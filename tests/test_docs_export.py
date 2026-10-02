@@ -21,6 +21,7 @@ def test_export_contract_documented():
                    "consumers must ignore unknown fields", "**inclusive**", "**exclusive**",
                    "start-time cohort", "full replacement", "Cursor lifetime rule", "valid until `snapshot_expired`",
                    "Residual (value privacy)", "Retry-After: 5", "client timeout of 30 s",
-                   "JSON is for machines; CSV is for people"):
+                   "JSON is for machines; CSV is for people", "`primary`, `subagent`, `evaluator`",
+                   "`evaluator` appears only for non-excluded events"):
         assert phrase in text, phrase
     assert (DOCS / "adr" / "005-export-contract.md").is_file()

@@ -38,7 +38,7 @@ Production runs the O10 release (backend `ddc7552`, schema 10). O9 (schema v11 +
 - Prompt payload is accepted only as an explicit opt-in and is capped at 3000 characters.
 - Ingest remains fail-open for producers but validation remains strict at the backend.
 - `client_event_id` is idempotent per project using a partial unique SQLite index; `cc-` ids (Claude Code producer) are unique across projects (v11, ADR-004).
-- Reserved tag keys `job_ref`, `runtime`, `work_type`, `job_attempt`, `producer` are normalized, never rejected; an invalid or unpaired `runtime`/`producer` marks the event `attribution_invalid` (stored, never counted). Tags cap: 1024 bytes, 20 keys — measure before adding a key (ADR-003).
+- Reserved tag keys `job_ref`, `runtime`, `work_type`, `job_attempt`, `producer` are normalized, never rejected; an invalid or unpaired `runtime`/`producer` marks the event `attribution_invalid` (stored; excluded from jobs and the export; analytics totals are not filtered). Tags cap: 1024 bytes, 20 keys — measure before adding a key (ADR-003).
 - SQLite requires WAL, `busy_timeout`, foreign keys, and additive migrations.
 - Cache-read, cache-creation, reasoning, prompt, and completion tokens remain distinct.
 - Requested model, resolved model, and pricing model remain distinct.

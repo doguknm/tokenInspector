@@ -123,6 +123,7 @@ def _fixture_tags():
 async def test_worst_case_plugin_tags_accepted(client):
     tags = _fixture_tags()
     assert len(tags) == 17
+    assert len(json.dumps(tags, separators=(",", ":"), ensure_ascii=False).encode()) == 722
     ack = await post(client, {"client_event_id": "w1", "model": "m", "tags": tags})
     assert (ack["inserted"], ack["rejected"]) == (1, 0)
     # the cap itself: exactly TAG_BYTES_MAX bytes is accepted, one byte over is still rejected

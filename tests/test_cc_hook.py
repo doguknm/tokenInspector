@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import time
 import types
@@ -13,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_support import (CANARY_HOST, CANARY_PATH_POSIX, CANARY_PATH_WIN, FakeServer, Transcript, canaries,
+from cc_support import (CANARY_HOST, CANARY_PATH_POSIX, CANARY_PATH_WIN, HOOK, PRODUCER_DIR, FakeServer, Transcript, canaries,
                         make_repo, modules, run_hook_subprocess, set_home, stdin_bytes, subagent_path)
 
 
@@ -164,7 +166,7 @@ def test_payload_value_canaries(cc, server, tmp_path, monkeypatch):
     raw_session = CANARY_PATH_WIN + "\\s"
     main = project_dir(tmp_path) / "value.jsonl"
     t = Transcript(main, raw_session, cwd=str(repo))
-    pid = t.prompt("uuid-" + CANARY_PATH_POSIX)
+    pid = t.prompt("11111111-2222-3333-4444-555555555555")
     t.call(model=CANARY_HOST)
     t.flush()
     sub = Transcript(subagent_path(main, "agent" + "zz"), raw_session, agent_id="C:/zz-canary/agent")
@@ -184,6 +186,10 @@ def test_payload_value_canaries(cc, server, tmp_path, monkeypatch):
     assert root["tags"]["project_source"] == "fallback"
     for body in server.bodies:
         assert not any(c in body for c in canaries()) and b"sk-ant" not in body
+    for path in cc["cc_config"].state_dir().rglob("*"):
+        if path.is_file():
+            raw = path.read_bytes()
+            assert not any(c in raw for c in canaries())
 
 
 # --- AC2.7: fail-open, bound, silence ----------------------------------------------------------------------
@@ -214,6 +220,20 @@ def test_hook_exits_zero_on_every_failure(home, tmp_path, failure):
         assert (code, out, err) == (0, b"", b"")
     finally:
         srv.close()
+
+
+def test_hook_import_failure_is_silent_and_fail_open(tmp_path):
+    copied = tmp_path / "producer"
+    copied.mkdir()
+    for source in PRODUCER_DIR.glob("*.py"):
+        shutil.copy2(source, copied / source.name)
+    (copied / "cc_events.py").write_text("raise ImportError('synthetic import failure')\n", encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("TI_CC_")}
+    data = json.dumps({"hook_event_name": "Stop", "transcript_path": str(tmp_path / "missing.jsonl"),
+                       "cwd": str(tmp_path)}).encode()
+    result = subprocess.run([sys.executable, str(copied / "cc_hook.py")], input=data, capture_output=True,
+                            timeout=10, env=env)
+    assert (result.returncode, result.stdout, result.stderr) == (0, b"", b"")
 
 
 def test_hook_silent_on_success(home, tmp_path):
@@ -268,6 +288,27 @@ def test_hook_bounded_on_blocked_stdin_and_slow_io(home, tmp_path):
             json.loads(path.read_bytes())
     finally:
         srv.close()
+
+
+def test_production_watchdog_bounds_never_closed_stdin(home):
+    # This intentionally takes about 5 s: no test override may shorten the production watchdog.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("TI_CC_")}
+    env.update({"HOME": str(home), "USERPROFILE": str(home),
+                "LOCALAPPDATA": str(home / "AppData" / "Local")})
+    bound = 5.0
+    start = time.monotonic()
+    proc = subprocess.Popen([sys.executable, str(HOOK)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=env)
+    try:
+        proc.wait(timeout=bound + 3)
+        out, err = proc.stdout.read(), proc.stderr.read()
+        elapsed = time.monotonic() - start
+        assert proc.returncode == 0 and out == b"" and err == b"" and elapsed < bound + 3
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=3)
+        proc.stdin.close()
 
 
 # --- AC2.7: cursor and checkpoints -------------------------------------------------------------------------
@@ -400,7 +441,8 @@ def test_truncated_or_replaced_transcript_resets(cc, server, tmp_path):
     t.call("a3", "b3")
     t.flush()
     run(cc, "Stop", t.path, str(tmp_path))
-    assert counters(cc)["truncation_resets"] == 1 and "a3" not in json.dumps(server.events())
+    # quoted: a bare "a3" also occurs by chance inside the random sha256 pseudonyms of the events
+    assert counters(cc)["truncation_resets"] == 1 and '"a3"' not in json.dumps(server.events())
     assert len(server.seen) == 3
     # (b) replaced by a new file (new identity) with a larger size
     before = state(cc, t.path)

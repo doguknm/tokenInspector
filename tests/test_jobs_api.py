@@ -87,8 +87,14 @@ async def test_jobs_exclude_evaluator(client):
     evaluator = event("jev-1", session=None, turn=None, job=JOB_A, at=ago(1), role="evaluator",
                       tags={"purpose": "evaluator"})
     await post(client, evaluator, project="token-inspector")
+    evaluator_task = event("jev-2", session="jev-session", turn="jev-turn", job=JOB_A, at=ago(1),
+                           role="evaluator", prompt_tokens=1000, completion_tokens=500,
+                           tags={"purpose": "evaluator"})
+    await post(client, evaluator_task, project="token-inspector")
     a = by_ref(await jobs(client))[JOB_A]
-    assert (a["llm_request_count"], a["prompt_tokens"], a["projects"]) == (1, 10, ["hermes"])
+    expected_cost = (10 * 3 + 5 * 15) / 1e6
+    assert (a["task_count"], a["llm_request_count"], a["prompt_tokens"], a["completion_tokens"],
+            a["cost_usd"], a["projects"]) == (1, 1, 10, 5, pytest.approx(expected_cost), ["hermes"])
 
 
 async def test_jobs_filters_and_window(client):

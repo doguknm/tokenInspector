@@ -137,23 +137,28 @@ async def test_rollback_runner_refuses_unknown_source_and_old_sqlite(tmp_path, m
     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1
 
 
-def test_rollback_step_guard_rechecks_version_under_lock(tmp_path, monkeypatch):
+@needs_drop_column
+async def test_rollback_step_guard_rechecks_version_under_lock(tmp_path, monkeypatch, capsys):
     """The exact source-version check runs inside the step's write transaction."""
-    path = tmp_path / "fake.db"
-    with closing(sqlite3.connect(path)) as conn:
-        conn.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT)")
-        conn.execute("INSERT INTO schema_migrations VALUES (11, 'x')")
-        conn.commit()
+    path = tmp_path / "v11.db"
+    await database.init_db(str(path))
+    assert rollback_schema.main(["--db", str(path), "--to", "11"]) == 0
+    assert _version(path) == 11
+    capsys.readouterr()
     calls = []
     real = rollback_schema._version
 
     def moving(conn):
-        calls.append(1)
+        calls.append({row[1] for row in conn.execute("PRAGMA table_info(tasks)")})  # columns at this read
         return real(conn) if len(calls) == 1 else 12  # changed between the plan and the step
 
     monkeypatch.setattr(rollback_schema, "_version", moving)
     assert rollback_schema.rollback(path, 10) == 1
-    assert real(sqlite3.connect(path)) == 11
+    assert len(calls) == 2 and "job_ref" in calls[1]  # refused by the in-transaction guard, before any statement
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "rollback_schema: rollback 11 -> 10 failed; nothing from this step was applied\n"
+    assert _version(path) == 11
 
 
 # --- AC-DB1.5 / AC2.4: cc- ids unique across projects ---------------------------------------------------------

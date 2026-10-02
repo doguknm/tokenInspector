@@ -169,10 +169,11 @@ def test_export_not_reusing_events_listing():
 
 async def test_export_value_canaries(client):
     path_model, host_model = "C:\\Users\\ZZ-CANARY-USER\\m", "zz-canary-host.internal"
+    path_provider = "C:\\Users\\ZZ-CANARY-USER\\prov"
     path_session, at_cid = "C:\\Users\\ZZ-CANARY-USER\\s", "zz@canary-cid"
     await post(client,
                ev("c1", session=path_session, model=path_model, status="error",
-                  error_type="ZZ canary free text /home/zz-canary"),
+                  error_type="ZZ canary free text /home/zz-canary", provider=path_provider),
                ev(at_cid, session="ok_session-1", turn="t2", model=host_model, status="error",
                   error_type="openai.RateLimitError"),
                ev("C:\\Users\\ZZ-CANARY-USER\\cid", session="s3", turn="t3"))
@@ -184,6 +185,7 @@ async def test_export_value_canaries(client):
     pseudo = [i for i in items if i["session_id"].startswith("p-")]
     assert len(pseudo) == 1 and len(pseudo[0]["session_id"]) == 34
     assert pseudo[0]["model"] is None and pseudo[0]["pricing_model"] is None  # path-shaped model -> unknown
+    assert pseudo[0]["provider"].startswith("p-") and len(pseudo[0]["provider"]) == 34
     assert pseudo[0]["error_type"] == "other"
     host = next(i for i in items if i["session_id"] == "ok_session-1")
     assert host["model"] == host_model  # the documented single-label/FQDN residual: shape cannot tell it apart
@@ -192,6 +194,8 @@ async def test_export_value_canaries(client):
     assert first.json()["items"] == second.json()["items"]  # deterministic pseudonyms
     tasks = await client.get("/api/export/v1/tasks", params={"from": START, "to": END})
     assert "ZZ-CANARY-USER" not in tasks.text
+    jobs = await client.get("/api/export/v1/jobs", params={"from": START, "to": END})
+    assert path_provider not in first.text and path_provider not in tasks.text and path_provider not in jobs.text
 
 
 # --- AC3.3 ----------------------------------------------------------------------------------------------------

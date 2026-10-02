@@ -217,6 +217,7 @@ class FakeServer:
         self.bodies: list[bytes] = []
         self.headers: list[dict[str, str]] = []
         self.seen: dict[str, str] = {}
+        self.submissions: list[str] = []
         self.batches = 0
         self.rejected_next = 0
         server = self
@@ -249,16 +250,19 @@ class FakeServer:
                     payload = b'{"inserted": true}'
                 else:
                     events = json.loads(body)["events"]
-                    ins = dup = 0
+                    ins = dup = rej = 0
                     for e in events:
-                        if e["client_event_id"] in server.seen:
+                        event_id = e["client_event_id"]
+                        server.submissions.append(event_id)
+                        if event_id in server.seen:
                             dup += 1
+                        elif server.rejected_next:
+                            server.rejected_next -= 1
+                            rej += 1
                         else:
-                            server.seen[e["client_event_id"]] = self.headers.get("X-Project-Name")
+                            server.seen[event_id] = self.headers.get("X-Project-Name")
                             ins += 1
-                    rej = min(server.rejected_next, ins)
-                    server.rejected_next -= rej
-                    payload = json.dumps({"accepted": len(events), "inserted": ins - rej, "duplicates": dup,
+                    payload = json.dumps({"accepted": len(events), "inserted": ins, "duplicates": dup,
                                           "rejected": rej, "items": []}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

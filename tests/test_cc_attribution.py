@@ -79,6 +79,14 @@ def test_hostname_and_ipv4_names_fall_through(cc, tmp_path, monkeypatch):
     assert at.resolve(str(ok), {str(ok): "zz-canary-box"}) == ("real", "git_remote")
 
 
+def test_normalized_hostname_git_root_falls_through(cc, tmp_path, monkeypatch):
+    at = cc["cc_attribution"]
+    monkeypatch.setattr(socket, "gethostname", lambda: "Build+Node")
+    monkeypatch.setattr(socket, "getfqdn", lambda: "Build+Node")
+    repo = make_repo(tmp_path / "build-node")
+    assert at.resolve(str(repo), {}) == ("claude-code", "fallback")
+
+
 def test_devir_clone_resolves_to_origin_slug(cc, tmp_path):
     at = cc["cc_attribution"]
     clone = make_repo(tmp_path / "PEGADocRagAgent-devir", "git@github.com:someone/PEGADocRag.git")
