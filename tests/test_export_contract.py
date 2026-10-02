@@ -1,6 +1,7 @@
 """O9 Phase 3: versioned read-only export v1 — contract, allowlists, value rules, envelope (X2-X5)."""
 
 import ast
+import base64
 import json
 import sqlite3
 from pathlib import Path
@@ -262,6 +263,20 @@ async def test_export_errors_static_no_echo(client, caplog):
                                                                          "cursor": cursor})
         assert response.status_code == 400 and response.json()["error"] == "invalid_cursor"
     assert "canary" not in caplog.text
+
+
+async def test_export_oversized_numbers_rejected(client):
+    """code-r1 p1-F3: a huge limit or an out-of-int64 cursor value is a static 400, never a 500."""
+    response = await client.get("/api/export/v1/events", params={"from": START, "to": END, "limit": "9" * 5000})
+    assert response.status_code == 400 and response.json() == {"error": "invalid_limit", "schema_version": 1}
+    await post(client, *(ev(f"o{i}", turn=f"o{i}", tags=PLUGIN) for i in range(2)))
+    cursor = (await export(client, "events", limit=1))["next_cursor"]
+    payload = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    for key in ("s", "r", "k"):
+        for bad in (2**63, -1):
+            forged = base64.urlsafe_b64encode(json.dumps({**payload, key: bad}).encode()).decode().rstrip("=")
+            response = await client.get("/api/export/v1/events", params={"from": START, "to": END, "cursor": forged})
+            assert response.status_code == 400 and response.json()["error"] == "invalid_cursor", (key, bad)
 
 
 # --- AC3.5 / AC3.6 --------------------------------------------------------------------------------------------

@@ -329,3 +329,16 @@ Mutation checks (one mutation at a time: break the control → named test red �
 | FM7 | 3 | `static/app.js` `fetchAllExport` — seen-cursor check dropped | caught | `test_export_loop_terminates` (tests/browser/test_export_download.py:135, the fixed "Export failed." wait in `_status` timed out: the loop kept fetching) |
 
 Phase 3 mutation runner: one mutation at a time, restored byte-for-byte in a `finally` block and compared after each mutation (CRLF-aware); `git status` showed no code file modified afterwards. **30/30 caught.**
+
+### Code review r1 — fix mutations (RM*)
+
+Runner: scratchpad `mutate_r1.py` (`__main__` guard, `encoding="utf-8", errors="replace"`, file restored byte-for-byte in `finally` and compared; originals checked after each run).
+
+| # | Fix | Control | Result | Failing test(s) |
+|---|---|---|---|---|
+| RM1 | p1-F2 | `routes/jobs.py` — `JOB_REF_RE` re-check of the job row removed | caught | `test_jobs_legacy_tag_values_never_returned` (tests/test_jobs_api.py) |
+| RM2 | p1-F2 | `routes/jobs.py` — runtime closed list removed | caught | `test_jobs_legacy_tag_values_never_returned` |
+| RM3 | p1-F2 | `routes/jobs.py` — unknown work type kept raw instead of `other` | caught | `test_jobs_legacy_tag_values_never_returned` |
+| RM4 | p1-F3 | `routes/export.py` — `limit` length cap removed | caught | `test_export_oversized_numbers_rejected` (tests/test_export_contract.py) |
+| RM5 | p1-F3 | `routes/export.py` — cursor `s`/`r` int64 range check removed | caught | `test_export_oversized_numbers_rejected` |
+| RM6 | p1-F3 | `routes/export.py` — cursor `k` int64 range check removed | caught | `test_export_oversized_numbers_rejected` |

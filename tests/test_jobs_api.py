@@ -1,9 +1,12 @@
 """O9 Phase 1: GET /api/jobs, cost per launcher job (J5, AC1.5)."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from sqlalchemy import text
 
+from database import AsyncSessionLocal
 from test_job_correlation import JOB_A, JOB_B, JOB_C, event, post
 
 PRICED, UNPRICED = "claude-sonnet-4-6", "zz-unpriced-model"
@@ -159,3 +162,21 @@ async def test_jobs_exclude_invalid_attribution(client):
     a = by_ref(data)[JOB_A]
     assert (a["llm_request_count"], a["task_count"], a["prompt_tokens"]) == (1, 1, 10)
     assert data["anomalies"]["invalid_attribution_events"] == 1
+
+
+async def test_jobs_legacy_tag_values_never_returned(client):
+    """code-r1 p1-F2: pre-v11 tags were never normalized; /api/jobs re-applies the value rules on read."""
+    await post(client, event("ok", session=None, turn=None, job=JOB_A, at=ago(1)),
+               event("leg1", session=None, turn=None, at=ago(1)), event("leg2", session=None, turn=None, at=ago(1)))
+    legacy = {"leg1": {"job_ref": "/home/zz-canary-user/private", "work_type": "zz-canary-host.internal"},
+              "leg2": {"job_ref": JOB_A, "runtime": "zz-canary-runtime", "work_type": "zz-canary-work"}}
+    async with AsyncSessionLocal() as session:  # written as old code would have stored them
+        for cid, tags in legacy.items():
+            await session.execute(text("UPDATE token_events SET tags_json = :t WHERE client_event_id = :c"),
+                                  {"t": json.dumps(tags), "c": cid})
+        await session.commit()
+    response = await client.get("/api/jobs")
+    assert response.status_code == 200 and "zz-canary" not in response.text
+    data = response.json()
+    assert [i["job_ref"] for i in data["items"]] == [JOB_A]
+    assert (by_ref(data)[JOB_A]["work_types"], by_ref(data)[JOB_A]["runtimes"]) == (["other"], ["hermes-agent"])

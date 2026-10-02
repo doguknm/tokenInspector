@@ -18,7 +18,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database import get_session
 from jev_scorer import EVALUATOR_PROJECT
-from routes.events import RUNTIMES, WORK_TYPES
+from routes.events import JOB_REF_RE, RUNTIMES, WORK_TYPES
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -103,13 +103,14 @@ def _attempts(value: Any) -> list[int]:
 
 
 def _item(row) -> dict[str, Any]:
-    work_types = _split(row["work_types"])
+    # value rules again on read: legacy (pre-v11) tags were never normalized
+    work_types = sorted({w if w in WORK_TYPES else "other" for w in _split(row["work_types"])})
     priced_count = int(row["priced_count"] or 0)
     unpriced_count = int(row["unpriced_count"] or 0)
     llm_count = int(row["llm_request_count"] or 0)
     return {
         "job_ref": row["job_ref"],
-        "runtimes": _split(row["runtimes"]),
+        "runtimes": [r for r in _split(row["runtimes"]) if r in RUNTIMES],
         "work_type": work_types[0] if len(work_types) == 1 else None,
         "work_types": work_types,
         "attempts": _attempts(row["attempts"]),
@@ -147,7 +148,8 @@ async def list_jobs(
         return _invalid_filter()  # static body: the value is never echoed
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     params = {"cutoff": cutoff, "evaluator_project": EVALUATOR_PROJECT}
-    jobs = [_item(row) for row in (await session.execute(text(_JOBS_SQL), params)).mappings().all()]
+    rows = (await session.execute(text(_JOBS_SQL), params)).mappings().all()
+    jobs = [_item(row) for row in rows if JOB_REF_RE.fullmatch(str(row["job_ref"]))]
 
     # Filters keep whole jobs (their totals are never reduced to the matching calls); each filter's
     # option list ignores that filter itself.

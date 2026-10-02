@@ -1,0 +1,35 @@
+Goal: O9 stage 2 — run the hermes code review (one round) over all three O9 phases, handle its findings, then run the Claude integration review and handle its findings. Done when: every review part has a report in Plans\o9-job-correlation-cc-producer\hermes\; every finding has an outcome row in status.md `## Hermes Reviews` (fixed / known limitation / rejected, with the reason); every fix is covered by a test, and every fix to a control also has a mutation check (break → red → revert) in the Verification Log; the integration review report is saved and its findings handled the same way; the backend suite is green on Windows (incl. browser) and on hermes, and the plugin suite too if the plugin changed; Lane Status rows `hermes-review` and `review` are done; the commits are pushed to `hermes`. Nothing is deployed, installed or restarted.
+
+READ FIRST: C:\Users\Bentego_Admin\Projects\tokenInspector\CLAUDE.md (Recurring Problems 8, 11, 17, 18, 19, 20), then in Plans\o9-job-correlation-cc-producer\: RESUME.md, status.md (`## Hermes Code Review` = the review spec, Drift Log, Known Limitations, Phase Checkpoints, Verification Log), 2026-09-28-summary.md (acceptance criteria), the Acceptance Criteria section of every lane file. Then C:\Users\Bentego_Admin\.claude\commands\new-plan.md "Hermes review protocol" and the /hermes skill. The plan is LOCKED: do not re-ask decisions recorded in RESUME.md or the Drift Log.
+
+REPOS: backend C:\Users\Bentego_Admin\Projects\tokenInspector and plugin C:\Users\Bentego_Admin\Projects\token_inspector, both on branch feat/task-telemetry-jev-pilot. Diff bases: backend PLAN_BASE `904dec2`, plugin `4b069b4`.
+
+ORDER:
+1. Build the review parts exactly as status.md `## Hermes Code Review` says (Part 1 backend code, Part 2 backend tests, Part 3 plugin + shared files S1–S5; split further by directory if a part is over 100 KB). Every part carries the brief's ACs, every lane file's Acceptance Criteria, the Drift Log and Known Limitations. S5 is reviewed as installer code only, never the real settings.json content.
+2. Run the parts through `C:/Users/Bentego_Admin/Projects/AIFromScratch/scripts/hermes.sh` with `HERMES_WORK_TYPE=review`; TAG = `o9-job-correlation-cc-producer-code-r1-p<N>`; reports to `hermes/<TAG>.md`. Before each send: a row in the SESSION-COORDINATION "hermes sırası" table and a message to PossibleSkills; wait for a free queue (other sessions use hermes); `wait` in the background; mark the row done and message again afterwards. Every prompt says READ-ONLY and "PEGA unreachable".
+3. Triage every finding (rule below), apply the fixes with tests, mutation checks for fixed controls, one commit per logical fix group. Record each finding in the `## Hermes Reviews` table.
+4. Claude integration review: a new Opus subagent that did not write the code, read-only. Scope as in status.md Lane Status `review`: AC → test map across both repos; cross-repo contracts (job env contract, tag keys, `parent_project_name`, attribution vectors (`test_attribution_vectors_identical` must run, not skip), `valid_ack`); the Deploy Runbook. Save its report next to the hermes reports; handle its findings with the same triage rule.
+5. Checkpoint: Windows `.venv/Scripts/python.exe -m pytest -q` (incl. browser), `py_compile` of `*.py routes/*.py scripts/*.py producers/claude_code/*.py`, `node --check static/app.js`, `git diff --check`; plugin suite if the plugin changed; hermes suites in temp worktrees (backend with the venv python; plugin with the venv python and the Hermes runtime python, worktree directory named `token_inspector`), removed afterwards; prod checkouts on `main` untouched. Commit, push to `hermes` (backend `origin` too if reachable). Update status.md: `## Hermes Reviews`, Known Limitations, Lane Status (`hermes-review`, `review` = done), Verification Log, RESUME.md "Now".
+
+TRIAGE RULE (choose one before starting and delete the other line):
+- B) Global CLAUDE.md rule: present every finding (CRITICAL and BLOCKER included) to the user in plain language with a concrete scenario and the fix options; fix nothing without approval.
+In both cases a finding that is not fixed is written to `## Known Limitations` with its reason; nothing is dropped silently.
+
+ROUND LIMIT: one hermes round only. There is no round 2 and no re-review to verify fixes: fixes are verified with tests and mutation checks. If a finding looks severe enough to need re-review, say so to the user and stop; do not start a second round.
+
+ANTI-OVERENGINEERING (caveman):
+- Fix only what a finding names, under `caveman:surgical-patch`; never refactor neighbouring code.
+- After each fix group, run `caveman:cavecrew-reviewer` on its diff and remove any extra scope before the next group.
+- Checkpoint under `caveman:verify-and-stop`.
+- Caveman applies to chat only. Code, comments, docs, commit messages, status.md and the prompts sent to hermes are written in normal English prose.
+
+LOCKED:
+- No deploy, no migration on the production DB, no plugin install, no `hermes gateway restart`, no Claude Code hook install, no S2/S3 patch, no flag change, no INGEST_TOKEN. Those belong to stage 3 (deploy, with user approval).
+- Do not tell PossibleSkills the export is live (O10).
+- Never name a model or provider for hermes (no `-m`, no `--provider`, no `HERMES_MODEL`). If hermes reports a model/provider error, stop and report it.
+- Privacy: no prompt/response text, tool args, paths, hostnames or free error text in any payload, export or state file. Never put a real address, token or tailnet name into a prompt, a report or a doc.
+- Shared files (the three hermes.sh copies, ~/.claude/commands/hermes.md, settings.json): a finding that needs one of them changed → write it down, stop and ask. Only the SESSION-COORDINATION queue rows and messages are written routinely.
+
+RULES: `python` not `python3`; patch scripts via Write, never Bash heredoc; hermes ssh via Windows OpenSSH (`/c/WINDOWS/System32/OpenSSH/ssh.exe -o ClearAllForwardings=yes`); mutation runners with a `__main__` guard, `encoding="utf-8", errors="replace"`, CRLF-aware replacements, originals checked after every mutation; export tests use their own model names (pricing rules survive per-test cleanup); replies in Turkish; last line "Hermes kullanıldı"/"Hermes kullanılmadı". If the weekly limit reaches 90%, finish the current fix group, commit locally and stop.
+
+END: report the review outcome (parts sent, findings per severity, fixed / known limitation / rejected counts, integration review result, commits, test counts, mutation results), then `/caveman off` → `/sync-docs` → `/compress` → `/sync-memory`. Stop. Stage 3 (the single deploy) starts as a separate goal, with user approval.

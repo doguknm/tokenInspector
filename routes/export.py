@@ -358,6 +358,9 @@ def _parse(value: Optional[str]) -> Optional[datetime]:
     return parsed if parsed.tzinfo is not None else None
 
 
+_INT64_MAX = 2**63 - 1
+
+
 def _encode_cursor(payload: dict) -> str:
     raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -373,9 +376,12 @@ def _decode_cursor(value: str, dataset: str, start: str, end: str) -> Optional[d
     if payload.get("f") != start or payload.get("t") != end:  # a cursor is bound to its dataset and range
         return None
     key_type = int if dataset == "events" else str
-    if not all(isinstance(payload.get(k), int) and not isinstance(payload.get(k), bool) for k in ("s", "r")):
+    if not all(isinstance(payload.get(k), int) and not isinstance(payload.get(k), bool)
+               and 0 <= payload[k] <= _INT64_MAX for k in ("s", "r")):
         return None
     if not isinstance(payload.get("e"), str) or type(payload.get("k")) is not key_type:
+        return None
+    if key_type is int and not 0 <= payload["k"] <= _INT64_MAX:  # SQLite binds signed 64-bit only
         return None
     return payload
 
@@ -392,7 +398,7 @@ async def _export(dataset: str, start_raw: Optional[str], end_raw: Optional[str]
         return _error(400, "invalid_range")
     if limit_raw is None:
         limit = DEFAULT_LIMIT
-    elif limit_raw.isascii() and limit_raw.isdigit() and 1 <= int(limit_raw) <= MAX_LIMIT:
+    elif limit_raw.isascii() and limit_raw.isdigit() and len(limit_raw) <= 6 and 1 <= int(limit_raw) <= MAX_LIMIT:
         limit = int(limit_raw)
     else:
         return _error(400, "invalid_limit")
