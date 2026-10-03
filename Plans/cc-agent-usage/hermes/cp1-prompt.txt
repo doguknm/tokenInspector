@@ -1,0 +1,148 @@
+TASK: Analysis and implementation plan (READ-ONLY). Do not modify any file. Produce one markdown report.
+
+CONTEXT
+Token Inspector is a local, privacy-first FastAPI + SQLite service that stores LLM token telemetry
+sent by producer hooks. Two producer codebases are in scope:
+- backend repo (FastAPI app, ingest, storage, analytics, export): read-only worktree at
+  /tmp/<RUN>/tokenInspector (commit matches the current main line).
+- Hermes producer plugin (Python package that hooks the Hermes agent runtime): read-only worktree
+  at /tmp/<RUN>/token_inspector.
+(user home paths are omitted on purpose; "PEGA" and any other unrelated project is unreachable and out of scope).
+
+The Claude Code producer (`producers/claude_code/cc_hook.py` in the backend repo) reads a Claude Code
+JSONL transcript and POSTs token events. Today a Claude Code event carries:
+- `role`: "primary" for the main thread, "subagent" for a subagent run;
+- no agent identity at all;
+- no complexity value.
+The Hermes plugin computes a per-call complexity tier named `request-shape-v1` from numeric request
+shape only (message length, message count, approx input tokens; see `token_inspector/complexity.py`),
+so plugin events carry `complexity` and plugin-derived tasks carry `start_complexity`. Claude Code
+events carry neither, so their tasks have no `start_complexity`.
+
+Goal of the change (goal 1 of three): agent identity + per-call complexity for Claude Code, the DATA
+layer only — producer, ingest validation, storage, task derivation, read API fields, export. The
+dashboard "Agents" tab is a later goal and is NOT in scope here; this plan must specify the read-side
+contract that the tab will consume.
+
+EVIDENCE DISCIPLINE
+- Every claim needs `file:line` evidence from the two worktrees. Quote the smallest decisive line.
+- Read-only: never edit a file, never run a test that writes into the repo, never start a server.
+- Privacy: never include prompt/response text, tool arguments, file paths, hostnames, tokens, SSH or
+  tailnet names in the report. Message LENGTHS are numbers; message CONTENT is never quoted.
+- If a fact is not verifiable in the worktrees, say "unknown from code" instead of guessing.
+
+CORPUS FACTS ALREADY MEASURED (from a previous, completed analysis of the real Windows transcript
+corpus; counts only, treat as given, do not re-measure):
+- 194 transcripts analysed: 137 main-session files and 137 subagent files, so 137 subagent runs; each
+  subagent run has a sidecar file `subagents/agent-<agentId>.meta.json` next to its `agent-<agentId>.jsonl`.
+- 18 640 assistant streaming groups ("calls"), 38 088 real-model assistant lines, 16 851 tool-result
+  user lines, 588 `<synthetic>` lines (all-zero usage), 29 meta lines.
+- Stop-hook stdin keys: `session_id, prompt_id, transcript_path, cwd, permission_mode, hook_event_name,
+  stop_hook_active, last_assistant_message, background_tasks, session_crons`.
+  SubagentStop stdin adds: `agent_id, agent_type, agent_transcript_path`.
+  SessionEnd stdin: `session_id, prompt_id, transcript_path, cwd, hook_event_name, reason`.
+- Every subagent JSONL line carries `agentId` (= file suffix), `sessionId` (= parent session) and
+  `isSidechain: true`; the first `promptId` in a subagent file equals the parent's Agent tool-result
+  `promptId` (60/60 observed).
+- Turn key = `promptId` of the most recent user line carrying one.
+- `role` today is derived only from which file the hook is draining, not from any field.
+- The existing call id is `cc-` + sha256(`message.id` U+001F `requestId`) and is idempotent per project,
+  unique across projects (ADR-004).
+
+READ THESE FIRST (in the worktrees)
+backend: `producers/claude_code/cc_hook.py`, `producers/claude_code/cc_attribution.py`,
+`producers/claude_code/README.md`, `routes/events.py` (ingest validation, reserved tag normalization,
+idempotency, tag size cap), `models.py`, `migrations.py`, `database.py`, `task_store.py` (task
+derivation, `start_complexity`, tags), `routes/analytics.py` (complexity endpoints, `complexity-matrix`,
+method parameter), `routes/jobs.py`, `routes/export.py` (snapshot, `COMPLEXITY_METHODS`,
+`export_state.revision`), `docs/export-contract-v1.md`, `docs/adr/003-job-correlation-contract.md`,
+`docs/adr/004-cross-source-dedup-authority.md`, `docs/adr/005-export-contract.md`, and the CC tests
+under `tests/` (especially `tests/test_cc_*.py` and `tests/fixtures/attribution_vectors.json`).
+plugin: `token_inspector/complexity.py` and its tests, `token_inspector/` sink/event builder, and the
+plugin README for what it sends.
+
+DELIVERABLE — a markdown report with these sections, each answer backed by file:line:
+
+A. AGENT IDENTITY
+ A1. Which sources can carry an agent label into the producer, and which is reliable for EVERY run
+     (main thread, subagent, nested subagent, forked subagent, a resumed run, and a backlog drain
+     where the hook draining a transcript is NOT that run's SubagentStop event):
+     (a) SubagentStop stdin `agent_type` / `agent_id`;
+     (b) the subagent transcript's own first line(s) (`agentId`, any agent-type key);
+     (c) the `.json` sidecar (`agent-<id>.meta.json`) — today never read;
+     (d) the parent transcript's Agent tool-use input (the `subagent_type` field in the tool-use
+         input of the Agent tool call, visible on the parent side as a tool-result/paired line).
+     For each: does it survive a backlog drain where no SubagentStop fires for that run? Does it
+     survive `--resume`, forks, and nested subagents? State the verdict per source.
+ A2. How the chosen value should be carried in the producer's persisted state (`ctx`) between hook
+     invocations, with no file paths and no content. Name the exact state keys and the write/read
+     points.
+ A3. Label taxonomy and value rules: main thread (`main`?), built-in agent types (give the closed list
+     you can evidence, or say unknown-from-code), user agents from `.claude/agents/*.md` (how the name
+     would appear), plugin agents (`plugin:<name>` shape?), nested and forked subagents. Propose a
+     safe-id regex.
+ A4. Privacy rule for custom names: built-ins may pass as-is; a custom name should pass only if it
+     matches the safe-id shape and optionally an allowlist; otherwise collapse to a pseudonym
+     (`a-<hash>`) or the literal `custom`. Propose the exact rule, the config key name, the default
+     (safe default = off/deny for custom names), and the canary tests that prove a leaking custom name
+     (one containing a path, a URL, an email, a hostname) is rejected or hashed.
+ A5. Hermes plugin: is there an equivalent agent identity for a Hermes run (a delegate/subagent tool
+     name?) that is worth the same field? If yes, name the field source in the plugin; if no, say so
+     explicitly and recommend documenting "not available" so the two producers stay symmetric.
+
+B. PER-CALL COMPLEXITY FOR CLAUDE CODE
+ B1. Which NUMERIC inputs the transcript provides per call WITHOUT reading text: current user/task
+     message character length, message count in the turn, input tokens from `usage` (with and without
+     cache fields), tool-result sizes (bytes? count?). State for each whether it is already available
+     in the producer's parsed window, or needs new parsing, at file:line.
+ B2. For a subagent call, what counts as the "user message" (the task text handed down by the parent)
+     and how its length is obtained without storing the text; same question for a main-thread turn.
+ B3. Propose a Claude Code complexity method. Compare against `request-shape-v1` and choose ONE:
+     either the same tiers under a NEW method name (e.g. `cc-request-shape-v1`), or a mapping that
+     keeps tiers comparable across producers. Give exact thresholds and justify each threshold with
+     the corpus shape above (counts only). If a threshold cannot be justified from the given counts,
+     say so and propose how to obtain the missing count without reading content.
+ B4. How a Claude Code task's `start_complexity` is chosen: first call of the turn, first call of the
+     subagent run, or another rule. Tie it to the existing task derivation in `task_store.py`.
+ B5. Does the backend need to accept the new method name in: the ingest `complexity_method` field, the
+     analytics `method` parameter, and the export `COMPLEXITY_METHODS` list? Give file:line for each
+     place a method name is validated or enumerated, and say exactly what must change.
+
+C. STORAGE, READ SIDE, CONTRACT
+ C1. Agent identity at the EVENT level: a reserved tag key vs a `token_events` column. Consider the
+     tag budget (1024 bytes total, 20 keys) and the rule that a reserved key must be measured before
+     it is added (ADR-003), versus a column (schema v13 + a rollback script + `rollback_schema.py`
+     entry). Recommend one and give the exact migration/rollback shape if a column is chosen.
+ C2. Agent identity at the TASK level: a `tasks.agent` column, or derived at read time from the task's
+     events? Give the derivation if derived.
+ C3. Any index needed for per-agent aggregation (name the exact index and the query it serves).
+ C4. The read API the later "Agents" tab needs: per agent × complexity tier × model × day — calls,
+     tasks, prompt/completion/cache-read/cache-creation tokens, priced cost AND unpriced count
+     (unknown pricing must never read as zero), latency where known. Decide whether a new endpoint is
+     needed (e.g. `GET /api/analytics/agents`) and specify it fully: path, query parameters, response
+     JSON shape, and how it composes with the existing analytics endpoints. Goal 1 builds this
+     endpoint; goal 2 builds only the page.
+ C5. Export v1: additive fields (`agent`, the CC complexity method) versus a v2 contract. Judge the
+     consumer impact and the `export_state.revision` rule (a write that changes stored rows must bump
+     the revision in the same transaction). Give the exact additive field names and their value sets,
+     or the v2 decision with rationale.
+ C6. Backfill: existing Claude Code events cannot be re-sent (`cc-` ids are idempotent). State the
+     coverage explicitly ("from deploy on") and, only if it needs NO content and no transcript access,
+     describe a safe backend-side derivation for old rows; otherwise say "no backfill".
+
+D. STEP PLAN
+ D1. An ordered step plan for the integration: exact files, the tests to add (agent label for main /
+     subagent / nested / fork / backlog drain, custom-name privacy canaries, complexity tiers on
+     fixture transcripts, the tag-size test if a tag is chosen, export fields, and the endpoint
+     aggregation including unpriced-never-zero and evaluator exclusion).
+ D2. The mutation targets: for every new control, the exact assertion that must go red when the
+     control is broken (one line per control).
+ D3. Docs to update (README, AGENTS.md, CLAUDE.md, ARCHITECTURE.md, CHANGELOG, producer README,
+     export contract) and whether an ADR-006 is warranted (state the decision it would record).
+ D4. Risks and unknowns.
+ D5. OPEN DECISIONS for the user — a short list, each with the concrete scenario, the options and your
+     recommendation. This is the most important section: the user answers these before any code is written.
+
+OUTPUT
+Write the report as plain markdown. End the report with a "## Files cited" list of the file:line
+evidences you used. Nothing else is required.
