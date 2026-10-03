@@ -201,6 +201,19 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-co
 | GAP AC-DB1.2 | — | known limitation — no migration test on a copy of the demo seed DB | Known Limitations |
 | GAP AC-DB1.3 | — | known limitation (old-code compatibility tested with a hand-written v10-shaped INSERT); the v12 → v10 refusal vs chaining contradiction resolved in the Drift Log (AC-DB3.5 wins) | Known Limitations; Drift Log 2026-10-02 |
 
+### Deploy runbook review r1 (stage 3 CP1, 2026-10-03)
+
+Read-only `hermes chat` review (model/provider named by the user for this goal), one round, of the Deploy Runbook + Rollback at backend `08f28ce` / plugin `7a6d094`. Report: `hermes/o9-deploy-runbook-r1.md`. Triage with the user (rule B); all fixes are runbook text, no code change.
+
+| Finding | Severity | Outcome | Where |
+|---|---|---|---|
+| F1 | HIGH | fixed — hooks uninstalled (full path + `--settings`, verified by an uninstall dry-run, 10 s wait) before any rollback below Phase 2, incl. schema rollback and backup restore | Deploy Runbook, Rollback 1 |
+| F2 | MEDIUM | fixed — `python3` on hermes for the repair and installer commands; explicit `DB_PATH` / `TI_URL` shell setup | Deploy Runbook, shell setup, steps 5 and 8 |
+| F3 | MEDIUM | fixed — source counts and online backup in one pinned read transaction, copy verified against them; stop rule | Deploy Runbook, step 2 |
+| F4 | MEDIUM | fixed — exact `curl`/`jq` checks: meta fields, jobs `runtimes` with paging, export cursor loop with timezone-qualified bounds | Deploy Runbook, steps 4 and 9 |
+| F5 | MEDIUM | known limitation (user decision) — no extra gate proving the real S2/S3 launcher files carry the patch | Known Limitations |
+| F6 | MEDIUM | fixed — numeric baselines (non-null prompt count, plugin and CC counters), stop rule, evaluator idle check through `/api/tasks/evaluator-status` | Deploy Runbook, stop rule, steps 1, 7 and 9 |
+
 ## Hermes Code Review
 _Placeholder — the orchestrator writes this spec at /new-plan Step 7b, with PLAN_BASE (backend) and `4b069b4` (plugin) as the diff bases. Scope must cover both repos, the new `producers/claude_code/` tree, the migrations, and the coordinated shared-file diffs (S1–S5)._
 
@@ -209,22 +222,75 @@ _Owner: Claude executes; the user approves the deploy as a whole and, separately
 
 Upgrade — the **single** prod deploy, after the Claude integration review, with user approval (O1). Nothing below runs at a phase checkpoint.
 
-1. **Flags-off check.** On hermes: backend `STORE_TASK_PROMPTS` and `JEV_ENABLED` off, `secrets.env` sets no capture flag, `INGEST_TOKEN` unset; plugin `capture_task_prompt` off. Note the prod commits (backend `main`, installed plugin).
-2. **Online DB backup + verify.** `sqlite3` online backup API (not a file copy) of the prod `DB_PATH` to `~/backups/token-inspector-pre-o9-<UTC stamp>.db`; `PRAGMA integrity_check == ok`; `token_events` and `tasks` counts equal the source. Never commit or mirror it.
+**Stop rule (review r1 F6):** every step runs only after the previous step's check passed. On a failed check, stop: never install the plugin or the hooks after a failed backend check. A live check without evidence stays "pending", never "passed". A new CC `rejected` / `failed_posts`, a new plugin reject or any non-null task prompt halts acceptance and leads to investigation or the approved Rollback.
+
+**Shell setup on hermes (review r1 F2):** hermes has `python3` only (Windows: `python`). The deploy shell does not inherit the service environment, so bind `DB_PATH` explicitly to the service's configured absolute path (`systemctl --user show token-inspector.service -p Environment` or its drop-ins) and use `TI_URL` = the loopback base URL without a trailing slash. The repair, rollback and installer scripts are stdlib-only and run with the system `python3` from the backend checkout root.
+
+1. **Flags-off check + baselines.** On hermes: backend `STORE_TASK_PROMPTS` and `JEV_ENABLED` off, `secrets.env` sets no capture flag, `INGEST_TOKEN` unset; plugin `capture_task_prompt` off. Note the prod commits (backend `main`, installed plugin). Record numeric baselines only (review r1 F6): `SELECT COUNT(*) FROM tasks WHERE prompt_text IS NOT NULL` over a read-only connection (`?mode=ro`; expect 0 — not the task-list `has_prompt` filter, which skips purged rows), the plugin `counters.json` reject counters and, where a CC state dir exists, the CC `counters.json` `rejected` / `failed_posts`.
+2. **Online DB backup + verify (review r1 F3).** Source counts and the online backup come from **one pinned read transaction**, so ingest between them cannot fail a valid backup; the copy is then verified against those counts. Run from any directory on hermes; stop before step 3 on a non-zero exit (a leftover destination from a failed attempt is not a verified backup). Never commit or mirror it.
+   ```sh
+   export DB_PATH='<absolute service DB_PATH>'
+   export BACKUP_PATH="$HOME/backups/token-inspector-pre-o9-$(date -u +%Y%m%dT%H%M%SZ).db"
+   python3 -B - <<'PY'
+   import os, sqlite3
+   from pathlib import Path
+   from contextlib import closing
+   src_path = Path(os.environ["DB_PATH"]).resolve()
+   dst_path = Path(os.environ["BACKUP_PATH"]).resolve()
+   assert src_path.is_file()
+   dst_path.parent.mkdir(parents=True, exist_ok=True)
+   def counts(c):
+       return tuple(c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("token_events", "tasks"))
+   with dst_path.open("xb"):
+       pass
+   with closing(sqlite3.connect(src_path.as_uri() + "?mode=ro", uri=True)) as src:
+       src.execute("BEGIN")
+       expected = counts(src)
+       with closing(sqlite3.connect(dst_path)) as dst:
+           src.backup(dst)
+       src.rollback()
+   with closing(sqlite3.connect(dst_path.as_uri() + "?mode=ro", uri=True)) as bak:
+       assert bak.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+       assert counts(bak) == expected
+   print("backup_verified token_events=%d tasks=%d" % expected)
+   PY
+   ```
 3. **Backend fast-forward `main`.** On hermes, prod checkout: fetch the pushed branch and `git merge --ff-only` it into `main`. Schema changes v10 → v11 → v12 run at startup with the app's automatic, verified pre-migration backup (`<db>.bak-v10-*`); confirm it exists after the restart. Dependencies: expect no change (`requirements.txt` diff empty; the CC producer is stdlib-only); if the diff is not empty, install into the service venv before restarting.
-4. **Service restart + `/api/meta`.** `systemctl --user restart token-inspector.service`; `curl -fsS <loopback>/api/meta` → `schema_version: 12`, capture/JEV `not_enabled`, `task_prompt_allowlist: "empty"`; journal clean; `GET /api/jobs?days=1` → 200; `GET /api/export/v1/events?from=…&to=…` → 200 with `schema_version: 1`. The backend with the new tag cap is now live **before** any plugin that sends the new keys (AC1.4).
-5. **Repair script dry-run.** `python scripts/repair_task_parents.py --db "$DB_PATH"` → show the counts line (one count per class, incl. `cyclic`, `depth_exceeded`, `unresolved_ancestor`) to the user. `--apply` only with a **separate** user approval; it takes and verifies its own backup first. Record counts (no refs) in the Verification Log.
+4. **Service restart + `/api/meta`.** `systemctl --user restart token-inspector.service`; journal clean; the app's own pre-migration backup `<DB_PATH basename>.bak-v10-<YYYYMMDDTHHMMSSZ>` exists next to the DB (it checks integrity, event count and source version; `tasks` is covered by step 2). Checks (review r1 F4; `FROM`/`TO` = timezone-qualified ISO bounds such as `2026-10-03T00:00:00Z`, `FROM < TO`, span ≤ 92 days):
+   ```sh
+   curl -fsS "$TI_URL/api/meta" | jq -e '.schema_version == 12
+     and .task_prompt_capture == false and .task_prompt_capture_disabled_reason == "not_enabled"
+     and .jev_enabled == false and .jev_disabled_reason == "not_enabled"
+     and .task_prompt_allowlist == "empty"'
+   curl -fsS "$TI_URL/api/jobs?days=1" | jq -e 'has("items") and has("total")'
+   curl -fsS --get "$TI_URL/api/export/v1/events" --data-urlencode "from=$FROM" --data-urlencode "to=$TO" \
+     | jq -e '.schema_version == 1 and .dataset == "events"'
+   ```
+   The backend with the new tag cap is now live **before** any plugin that sends the new keys (AC1.4).
+5. **Repair script dry-run.** From the backend checkout root on hermes: `python3 scripts/repair_task_parents.py --db "$DB_PATH"` → show the counts line (one count per class, incl. `cyclic`, `depth_exceeded`, `unresolved_ancestor`) to the user. `--apply` (`python3 scripts/repair_task_parents.py --db "$DB_PATH" --apply`) only with a **separate** user approval; it takes and verifies its own backup first. Record counts (no refs) in the Verification Log.
 6. **Coordinated shared files** S1–S4 (three `hermes.sh` copies, `/hermes` skill) applied through SESSION-COORDINATION, if not already done. **6a (user decision 2026-09-28):** apply the S2/S3 patches (`shared-patches/S2-…`, `S3-…`) from each repo root with `git apply` after the user approves; write the ledger row first and leave a message for the owner sessions; re-run `test_launcher_env_contract` against the real files afterwards.
-7. **Plugin install + `hermes gateway restart`** only when no agent or JEV run is active: no `hermes -z` process, `evaluator_runs` has no `queued`/`running` row, the "hermes sırası" table shows no running job. Update the plugin source and the installed copy to the pushed commit, then `hermes gateway restart` from an external shell. Record PIDs before/after.
-8. **Hook installer (S5)** on Windows and on hermes: `python producers/claude_code/install.py --dry-run` → show its content-free operation summary (never a settings diff) → announce in SESSION-COORDINATION → `--apply` (local backup written, never synced; atomic write aborts if another session changed the file). Windows: the producer URL comes from env or the local config file (the tailnet HTTPS name allowed by the `remote-access.conf` drop-in), never from docs. hermes: loopback default. Confirm PossibleSkills' hooks are unchanged in the resulting file. **Global hooks take effect in all running Claude Code sessions immediately, without a restart** (measured by PossibleSkills): the moment `--apply` finishes, every open session on that machine starts sending, so apply only after step 4 (backend with the Phase 2 code live), and uninstall first if anything misbehaves.
+7. **Plugin install + `hermes gateway restart`** only when no agent or JEV run is active: no `hermes -z` process, no queued/running evaluator run (`curl -fsS "$TI_URL/api/tasks/evaluator-status" | jq -e '.running == false and .current_run == null'`, review r1 F6), the "hermes sırası" table shows no running job. Update the plugin source and the installed copy to the pushed commit, then `hermes gateway restart` from an external shell. Record PIDs before/after.
+8. **Hook installer (S5)** on Windows and on hermes, from the backend checkout root: `python producers/claude_code/install.py --dry-run` on Windows, `python3 producers/claude_code/install.py --dry-run` on hermes → show its content-free operation summary (never a settings diff) → announce in SESSION-COORDINATION → the same command with `--apply` (local backup written, never synced; atomic write aborts if another session changed the file). Windows: the producer URL comes from env or the local config file (the tailnet HTTPS name allowed by the `remote-access.conf` drop-in), never from docs. hermes: loopback default. Confirm PossibleSkills' hooks are unchanged in the resulting file. **Global hooks take effect in all running Claude Code sessions immediately, without a restart** (measured by PossibleSkills): the moment `--apply` finishes, every open session on that machine starts sending, so apply only after step 4 (backend with the Phase 2 code live), and uninstall first if anything misbehaves.
 9. **Final check** (Verification Log; every live row stays "pending deploy" until observed, each tracked separately — B-F11):
-   - AC1.2 live, per launcher copy that TI can exercise: one small `hermes.sh` review job through the `/hermes` flow (queue rule) with the AIFromScratch copy → `GET /api/jobs?days=1` lists its `job_ref` with `runtime=hermes-agent`, `work_type=review`. The PEGADocRag / PEGADocRagAgent `send` copies are covered by `test_launcher_env_contract` (synthetic) and stay "pending first real run" (no PEGA access needed here).
-   - AC2.2 live: one Windows Claude Code turn → export events of the last hour include `runtime=claude-code@windows`, `producer=claude-code-hook`, the right project, distinct cache fields.
+   - AC1.2 live, per launcher copy that TI can exercise: one small `hermes.sh` review job through the `/hermes` flow (queue rule) with the AIFromScratch copy → the jobs API lists its `job_ref` with `hermes-agent` in `runtimes` and `work_type == "review"` (review r1 F4; follow `page` until `total` is covered):
+     ```sh
+     curl -fsS --get "$TI_URL/api/jobs" --data-urlencode days=1 --data-urlencode runtime=hermes-agent \n       --data-urlencode work_type=review --data-urlencode page_size=200 --data-urlencode "page=$PAGE" \n       | jq --arg j "$JOB_REF" '{total,page,items:[.items[] | select(.job_ref == $j) | {job_ref,runtimes,work_type,projects}]}'
+     ``` The PEGADocRag / PEGADocRagAgent `send` copies are covered by `test_launcher_env_contract` (synthetic) and stay "pending first real run" (no PEGA access needed here).
+   - AC2.2 / AC2.3 read the export events of a fixed `[FROM, TO)` around the run and follow `next_cursor` until `complete` is true (an expired snapshot restarts the scan; an incomplete scan is never a pass); equal or zero cache values are not failures — "distinct" means separate fields (review r1 F4):
+     ```sh
+     curl -fsS --get "$TI_URL/api/export/v1/events" --data-urlencode "from=$FROM" --data-urlencode "to=$TO" \n       --data-urlencode limit=1000 [--data-urlencode "cursor=$CURSOR"] \n       | jq '{complete,next_cursor,items:[.items[] | select(.producer == "claude-code-hook") | {runtime,producer,work_type,job_ref,project_name,cache_read_tokens,cache_creation_tokens}]}'
+     ```
+   - AC2.2 live: one Windows Claude Code turn → export events include `runtime=claude-code@windows`, `producer=claude-code-hook`, the right project, distinct cache fields.
    - AC2.3 live: the next real devir run (or a short one the user approves) → `runtime=claude-code@hermes`, `work_type=devir`, `job_ref` = the devir id, project `pegadocrag`; no prompt field.
-   - `tasks.prompt_text` non-null count unchanged (0); backend journal clean; plugin `counters.json` shows no new rejects.
+   - `tasks.prompt_text` non-null count unchanged (0, same read-only query as step 1); backend journal clean; plugin `counters.json` shows no new rejects; CC `counters.json` on each machine shows no rising `rejected` / `failed_posts` against the step-1 baseline (a silent hook failure shows only there).
 
 Rollback (either part):
-1. Flags stay off (they were never turned on). Uninstall the CC hooks first if they misbehave — and **always** before a backend code-only rollback below the Phase 2 code: `install.py --uninstall --apply` on each machine (backup written).
+1. Flags stay off (they were never turned on). Uninstall the CC hooks first if they misbehave — and **always** before any rollback of the backend below the Phase 2 code, whether code-only, schema rollback or a backup restore (review r1 F1). On each machine, with the same O9 installer path and settings file used at install (`python` on Windows, `python3` on hermes):
+   ```sh
+   python3 "<O9 backend checkout>/producers/claude_code/install.py" --settings "<settings path>" --uninstall --apply
+   python3 "<O9 backend checkout>/producers/claude_code/install.py" --settings "<settings path>" --uninstall --dry-run
+   ```
+   The dry-run must report zero remaining owned entries (backup written by the apply). Then wait for the 10 s hook `timeout` backstop so no hook invocation is still running, and only then continue with step 2.
 2. Plugin before backend if both: restore the previous plugin commit, `hermes gateway restart` with no job running. The `hermes.sh` env lines are harmless without the plugin and can stay.
 3. Backend: code-only rollback to the previous `main` commit is safe on a v12 DB (new columns nullable, partial indexes, `export_state` ignored); a later re-upgrade self-heals NULL `ingest_seq` above the high-water. If schema rollback is needed, stop the service and, while still in the O9 checkout (the older commit has no runner), run `python3 scripts/rollback_schema.py --db "$DB_PATH" --to 11`; only if v10 is needed, then run `python3 scripts/rollback_schema.py --db "$DB_PATH" --to 10` (exact source-version guard, reverse order, SQLite ≥ 3.35). Move the code back only after the schema rollback, then start the app commit the runner names for the resulting version; restore from the step-2 backup as the last resort.
 
@@ -241,6 +307,7 @@ _Review findings the user chose not to fix — one line each: `<plan|code>-revie
 - code-review r1 p10-F2: the launcher copies (S1–S3) export the validated job variables but do not `unset` inherited `TOKEN_INSPECTOR_JOB_*` values — accepted: the runner starts from a fresh non-interactive ssh shell where these are not set; changing the shared launcher copies needs a separate user decision.
 - integration review GAP AC-DB1.2: no migration test runs on a copy of the demo seed DB; v11/v12 migrations are tested on rollback-generated v10/v11 fixtures — accepted: the fixtures carry the same schema, and prod upgrades take a verified backup first (runbook step 2).
 - integration review GAP AC-DB1.3: old-code compatibility of a v11 DB is tested with a hand-written INSERT shaped like v10 `_upsert_task`, not with the v10 code itself — accepted: the v10 code is not importable next to the current code in one test process.
+- deploy-runbook review r1 F5: `test_launcher_env_contract` skips a missing launcher and patches an unpatched S2/S3 copy in a temp dir, so a green run alone does not prove the real owner files carry the patch — accepted (user decision 2026-10-03): the patches are applied with `git apply` from each owner root right before the test, and a failed apply stops the step.
 
 ## Open Items
 | # | Item | Owner | Blocks |
