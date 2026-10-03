@@ -1,7 +1,7 @@
 # Status — O9: job correlation, cross-project child fix, Claude Code producer and a versioned read-only export
 
 **Started**: 2026-09-28
-**Last updated**: 2026-10-01 (Phase 3 checkpoint: backend `c4a07bc` + status commit; next stage 2: hermes code review r1 + Claude integration review)
+**Last updated**: 2026-10-03 (stage 3 CP1: deploy runbook review r1 handled, runbook fixes `9b3b0da`; next CP2 backend deploy with user approval)
 **Plan base commits**: backend PLAN_BASE = `904dec2` (backend HEAD at plan lock; the code diff excludes `Plans/`); plugin `4b069b4` (both on `feat/task-telemetry-jev-pilot`)
 **Phases**: 1 = job correlation + cross-project child fix · 2 = Claude Code producer + dedup authority · 3 = versioned read-only export. Each phase ends at a checkpoint (commit + push in the repos it touched — never a deploy). Hermes code review and the Claude integration review run once, at the end; the single prod deploy follows them, with user approval (O1).
 
@@ -494,3 +494,8 @@ Code review r1 and integration fix mutations: **21/21 caught** (RM1–RM21), ori
 | 2026-10-02 | Flake `test_truncated_or_replaced_transcript_resets` | 1 of 12 standalone runs failed: the bare `"a3"` check matched inside a random sha256 pseudonym; the check now looks for the quoted JSON string; 15/15 passed (CLAUDE.md RP 21) |
 | 2026-10-02 | hermes code job (worktrees `/tmp/o9-code/`) | backend 491 passed, 15 skipped (`-m "not browser"`); plugin 215 passed — before the RM16 test strengthening and the flake fix |
 | 2026-10-02 | Checkpoint suites on hermes (backend `87e50e0`, plugin `cb56106`; detached temp worktrees `/tmp/o9-cp/`, removed; prod checkouts on `main` untouched) | backend **491 passed, 15 skipped** (browser, no Playwright) on Python 3.12.3; plugin **215 passed** on Python 3.12.3 and Hermes runtime 3.11.15; locally `py_compile`, `node --check static/app.js`, `git diff --check` clean; `test_attribution_vectors_identical` ran (passed, not skipped) |
+| 2026-10-03 | **Stage 3 CP1** — Windows backend suite at `08f28ce` (before the runbook-only changes) | **547 passed** (incl. browser) |
+| 2026-10-03 | Stage 3 CP1 — hermes backend suite at `9b3b0da` (detached temp worktree `/tmp/o9-cp1/`, prod venv python, removed; prod checkout on `main` `ddc7552`, clean) | **490 passed, 17 skipped** (`-m "not browser"`). Plugin unchanged since `7a6d094` (no plugin suite needed) |
+| 2026-10-03 | Runbook r1 F3 — the step-2 backup procedure, extracted verbatim from the runbook, on throwaway DBs on hermes (WAL source with a concurrent writer; never the prod DB) | passes with the writer running (`backup_verified`); refuses an existing destination (rc 1) and a missing source (rc 1) |
+| 2026-10-03 | Runbook r1 F3 mutations (0.5 s pause after the source counts so the writer always commits in between; runner scratchpad `rb_mut.py`, `__main__` guard, `encoding="utf-8", errors="replace"`) | original rc 0; **DM1** pinned read transaction removed → rc 1 (count mismatch); **DM2** count check against a backup one row short → rc 1. **2/2 caught** |
+| 2026-10-03 | Runbook r1 F4/F6 — every new `curl`/`jq` check run against a temp v12 server on hermes (temp DB, loopback port 8199, worktree `9b3b0da`, removed); `jq` 1.x and `curl` present on hermes; jobs API takes `runtime`, `work_type`, `page`, `page_size` | meta, jobs, export, AC1.2 jobs query, export cursor-loop query, `evaluator-status`: all **rc 0** |
