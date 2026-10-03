@@ -22,37 +22,44 @@ J111, J222, J333 = "20260928-100000-111", "20260928-110000-222", "20260928-12000
 J444, J555 = "devir-20260928-130000-444", "20260928-140000-555"
 PLUGIN = {"runtime": "hermes-agent", "producer": "hermes-plugin"}
 CC = {"runtime": "claude-code@hermes", "producer": "claude-code-hook"}
+SEED_BASE = datetime.now(timezone.utc) - timedelta(hours=20)
 
 
 def _at(minutes):
-    return (datetime.now(timezone.utc) - timedelta(hours=20) + timedelta(minutes=minutes)).strftime(
-        "%Y-%m-%dT%H:%M:%S.%fZ")
+    return (SEED_BASE + timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _ev(cid, session, turn, job, minute, model="priced-model", work_type=None, attribution=PLUGIN):
+def _ev(cid, session, turn, job, minute, model="priced-model", work_type=None, attribution=PLUGIN,
+        attempt=1, prompt=10, completion=5, cache_read=2, cache_creation=3, total=None):
     tags = dict(attribution)
     if job:
         tags["job_ref"] = job
     if work_type:
         tags["work_type"] = work_type
-    return {"client_event_id": cid, "model": model, "session_id": session, "turn_id": turn, "prompt_tokens": 10,
-            "completion_tokens": 5, "tags": tags, "occurred_at": _at(minute)}
+    if attempt:
+        tags["job_attempt"] = attempt
+    return {"client_event_id": cid, "model": model, "session_id": session, "turn_id": turn, "prompt_tokens": prompt,
+            "completion_tokens": completion, "cache_read_tokens": cache_read, "cache_creation_tokens": cache_creation,
+            "total_tokens": total, "tags": tags, "occurred_at": _at(minute)}
 
 
 def _seed(url):
     with httpx.Client(base_url=url, timeout=10) as c:
         c.post("/api/settings/pricing", json={"model": "priced-model", "input_price_per_1m": 1.0,
-                                              "output_price_per_1m": 2.0}).raise_for_status()
+                                              "output_price_per_1m": 2.0, "cache_read_price_per_1m": 0.5,
+                                              "cache_creation_price_per_1m": 1.5}).raise_for_status()
         hermes = [
             _ev("a1", "s111", "t1", J111, 1, work_type="review"), _ev("a2", "s111", "t1", J111, 2, work_type="review"),
             _ev("a3", "s111", "t2", J111, 3, work_type="review"),
             # two later calls of the first task carry other jobs' ids: conflicts, counted under J111
-            _ev("a4", "s111", "t1", J222, 4), _ev("a5", "s111", "t1", J333, 5),
+            _ev("a4", "s111", "t1", J222, 4, attempt=2), _ev("a5", "s111", "t1", J333, 5, attempt=2),
             _ev("b1", "s222", "t1", J222, 10, work_type="code"),
             _ev("b2", "s222", "t1", J222, 11, model="unpriced-model", work_type="code"),
             _ev("c1", "s333", "t1", J333, 20, model="unpriced-model", work_type="brainstorm"),
             _ev("c2", "s333", "t1", J333, 21, model="unpriced-model", work_type="brainstorm"),
-            _ev("e1", "s555", "t1", J555, 40, work_type="review"), _ev("e2", "s555", "t2", J555, 41, work_type="code"),
+            _ev("e1", "s555", "t1", J555, 40, work_type="review"),
+            _ev("e2", "s555", "t2", J555, 41, work_type="code", prompt=0, completion=0,
+                cache_read=0, cache_creation=0, total=1000),
             _ev("n1", "s000", "t1", None, 50), _ev("n2", None, None, None, 51),
         ]
         ack = c.post("/api/events/batch", json={"events": hermes}, headers={"X-Project-Name": "hermes"}).json()
@@ -152,11 +159,13 @@ def test_jobs_view_lists_one_row_per_job(page):
     assert page.locator(ROWS).count() == 5  # events without a job_ref never make a row
     cells = _cells(page, J111)
     assert cells[1:6] == ["review", "hermes-agent", "hermes", "2", "5"]
-    assert cells[6:11] == ["50", "0", "0", "25", "75"]
+    assert cells[6:11] == ["50", "10", "15", "25", "100"]
     assert cells[COST].startswith("$") and not _row(page, J111).locator("td.cost-cell .badge").count()
+    assert cells[13:16] == [_at(1).replace("T", " ")[:19], _at(5).replace("T", " ")[:19], "1, 2"]
     mixed = _row(page, J555).locator("td").nth(1)
     assert mixed.inner_text().strip() == "mixed"
     assert mixed.locator("span").get_attribute("title") == "code, review"
+    assert _cells(page, J555)[12] == "$0.0015"
 
 
 def test_jobs_unpriced_never_zero(page):

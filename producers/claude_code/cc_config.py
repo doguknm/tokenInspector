@@ -22,7 +22,7 @@ DEFAULT_URL = "http://127.0.0.1:8100"  # same loopback default as the hermes plu
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 # Job env contract (same regexes as the plugin's job.py).
 JOB_REF_RE = re.compile(r"^(devir-)?[0-9]{8}-[0-9]{6}-[0-9]{1,10}$")
-WORK_TYPE_RE = re.compile(r"^[a-z0-9]{1,16}$")
+WORK_TYPES = ("brainstorm", "review", "code", "devir", "k1", "k2", "other")
 JOB_ATTEMPT_RE = re.compile(r"^[1-9][0-9]{0,3}$")
 
 
@@ -119,7 +119,7 @@ def job_tags() -> dict[str, Any]:
     if JOB_REF_RE.fullmatch(job_ref):
         tags["job_ref"] = job_ref
     work_type = os.environ.get("TOKEN_INSPECTOR_WORK_TYPE", "")
-    if WORK_TYPE_RE.fullmatch(work_type):
+    if work_type in WORK_TYPES:
         tags["work_type"] = work_type
     attempt = os.environ.get("TOKEN_INSPECTOR_JOB_ATTEMPT", "")
     if JOB_ATTEMPT_RE.fullmatch(attempt):

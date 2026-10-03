@@ -159,10 +159,12 @@ def test_payload_sentinel_bytes(cc, server, tmp_path):
 
 def test_payload_value_canaries(cc, server, tmp_path, monkeypatch):
     ce = cc["cc_events"]
+    work_type_canary = "zzcanaryhost"
     host = socket.gethostname()
     repo = make_repo(tmp_path / "10.9.8.7")  # IPv4-shaped repo dir, no origin
     monkeypatch.setenv("TOKEN_INSPECTOR_PROJECT_ALIASES", json.dumps({str(repo): host.lower()[:60] or "x"}))
     monkeypatch.setenv("TOKEN_INSPECTOR_JOB_REF", "sk-ant-CANARYSECRET0123")
+    monkeypatch.setenv("TOKEN_INSPECTOR_WORK_TYPE", work_type_canary)
     raw_session = CANARY_PATH_WIN + "\\s"
     main = project_dir(tmp_path) / "value.jsonl"
     t = Transcript(main, raw_session, cwd=str(repo))
@@ -185,11 +187,11 @@ def test_payload_value_canaries(cc, server, tmp_path, monkeypatch):
     assert {h["X-Project-Name"] for h in server.headers} == {"claude-code"}  # hostname alias + IPv4 dir fall through
     assert root["tags"]["project_source"] == "fallback"
     for body in server.bodies:
-        assert not any(c in body for c in canaries()) and b"sk-ant" not in body
+        assert not any(c in body for c in canaries()) and work_type_canary.encode() not in body and b"sk-ant" not in body
     for path in cc["cc_config"].state_dir().rglob("*"):
         if path.is_file():
             raw = path.read_bytes()
-            assert not any(c in raw for c in canaries())
+            assert not any(c in raw for c in canaries()) and work_type_canary.encode() not in raw
 
 
 # --- AC2.7: fail-open, bound, silence ----------------------------------------------------------------------

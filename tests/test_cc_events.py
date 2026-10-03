@@ -82,6 +82,15 @@ def test_events_built_only_from_allowlist(cc, tmp_path):
         assert key not in ev
 
 
+def test_job_tags_work_type_closed_list(cc, monkeypatch):
+    cfg = cc["cc_config"]
+    for work_type in cfg.WORK_TYPES:
+        monkeypatch.setenv("TOKEN_INSPECTOR_WORK_TYPE", work_type)
+        assert cfg.job_tags()["work_type"] == work_type
+    monkeypatch.setenv("TOKEN_INSPECTOR_WORK_TYPE", "zzcanaryhost")
+    assert "work_type" not in cfg.job_tags()
+
+
 def test_model_and_finish_reason_value_rules(cc, tmp_path):
     assert build(cc, one_record(cc, tmp_path, model=CANARY_HOST))["model"] == "unknown"
     assert build(cc, one_record(cc, tmp_path / "b", model="claude-opus-4-5"))["model"] == "claude-opus-4-5"

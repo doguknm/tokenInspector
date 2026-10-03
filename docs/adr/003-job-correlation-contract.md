@@ -17,7 +17,7 @@ The launcher exports, the producer (Hermes plugin `job.py`, Claude Code hook `cc
 | Env var | Producer rule (before sending) | Backend rule |
 |---|---|---|
 | `TOKEN_INSPECTOR_JOB_REF` | tag `job_ref` only if it fully matches `^(devir-)?[0-9]{8}-[0-9]{6}-[0-9]{1,10}$` (the launcher's own id shape, max 32 chars), else omitted | same regex, else dropped |
-| `TOKEN_INSPECTOR_WORK_TYPE` | tag `work_type` only if it fully matches `^[a-z0-9]{1,16}$`, else omitted | in `WORK_TYPES` → kept; any other present value → `other`; absent or empty → absent |
+| `TOKEN_INSPECTOR_WORK_TYPE` | tag `work_type` only if it is in the closed list `WORK_TYPES` (the same list as the backend), else omitted | in `WORK_TYPES` → kept; any other present value → `other`; absent or empty → absent |
 | `TOKEN_INSPECTOR_JOB_ATTEMPT` | integer tag `job_attempt` only if it fully matches `^[1-9][0-9]{0,3}$`, else omitted | an `int` ≥ 1 → kept, anything else dropped |
 
 The `/hermes` skill passes `HERMES_WORK_TYPE` / `HERMES_JOB_ATTEMPT` to `hermes.sh`, which validates them and exports the three variables right before the agent starts. Invalid values are omitted silently (never logged). The producer adds `runtime` and `producer` itself; they never come from env.
