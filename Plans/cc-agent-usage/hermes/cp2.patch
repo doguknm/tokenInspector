@@ -1,0 +1,1951 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 5d7e24e..e48de82 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -71,9 +71,9 @@ Backend unavailability must never break the caller. Backend validation failures
+ | `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` | schema rollback and code-only rollback check |
+ | `routes/jobs.py` | `GET /api/jobs`: cost per launcher job (read-only, no auth) |
+ | `scripts/repair_task_parents.py` | stdlib-only re-link of pre-O9 cross-project child tasks; dry-run default, verified backup before `--apply`, counts only |
+-| `scripts/rollback_schema.py`, `scripts/rollback_v12.sql`, `scripts/rollback_v11.sql` | the only supported schema rollback (v12 → v11 → v10, one step per transaction): exact source-version guard, SQLite ≥ 3.35 |
++| `scripts/rollback_schema.py`, `scripts/rollback_v13.sql`, `scripts/rollback_v12.sql`, `scripts/rollback_v11.sql` | the only supported schema rollback (v13 → v12 → v11 → v10, one step per transaction): exact source-version guard, SQLite ≥ 3.35 |
+ | `routes/export.py` | `GET /api/export/v1/{jobs,tasks,events}`: versioned read-only export (snapshot by `ingest_seq`, field and value allowlists, static errors); contract `docs/export-contract-v1.md`, ADR-005 |
+-| `producers/claude_code/` | stdlib-only Claude Code hook producer: `cc_hook.py` (entry, watchdog, fail-open), `cc_transcript.py` (reader, group finality), `cc_events.py` (allowlisted mapping, `cc-` ids), `cc_attribution.py`, `cc_config.py` (URL, token, aliases, job env), `cc_state.py` (cursor, locks, counters), `cc_client.py` (batch POST, `valid_ack`), `install.py` (settings.json installer) |
++| `producers/claude_code/` | stdlib-only Claude Code hook producer: `cc_hook.py` (entry, watchdog, fail-open), `cc_transcript.py` (reader, group finality), `cc_events.py` (allowlisted mapping, `cc-` ids), `cc_agent.py` (sanitized run-local label and bounded sidecar reader), `cc_complexity.py` (`cc-input-size-v1`), `cc_attribution.py`, `cc_config.py`, `cc_state.py`, `cc_client.py`, `install.py` |
+ | `static/` | dashboard shell, charts, tables, styles (Tasks view included) |
+ | `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot, jobs, repair, Claude Code producer (`test_cc_*.py`, `test_dedup_authority.py`), export (`test_export_*.py`, `test_migration_v12.py`, `test_docs_export.py`) regressions |
+ | `tests/browser/` | Playwright suite (marker `browser`; skipped without Playwright) |
+@@ -156,12 +156,16 @@ Cache pricing has independent rates. Reasoning tokens may already be represented
+ 
+ ## Complexity
+ 
+-Primary path:
++Hermes request-shape path:
+ 
+ ```text
+ request-shape-v1
+ ```
+ 
++Claude Code calls use the separate numeric `cc-input-size-v1` method, based only on input plus cache-read
++plus cache-creation tokens. The two methods measure different evidence and must not be compared as if their
++tiers were interchangeable.
++
+ It uses numeric request metadata: current user-message length, message count, and approximate input token count. It does not claim semantic difficulty and does not require raw prompt storage. Analytics includes unpriced observations in token averages; cost averages remain null without priced observations.
+ 
+ `complexity_scorer.py` is legacy and only runs when a source explicitly submits `prompt_text` without complexity and credentials are configured.
+@@ -310,3 +314,5 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
+ - `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters; they show up only in the aiosqlite DEBUG driver log (off in production), never in application logs.
+ - Prompt tests after O10 must take the allowed path: list the project, send `task_hierarchy="root"` and `prompt_eligibility="v1-allowed"` (backend), or call `_on_session_start` and pass the attach authorization (plugin). JEV test rows must be `root`.
+ - `hermes -z` ends with `os._exit` (`hermes_cli/main.py` `_run_and_exit_oneshot`), which skips the plugin's `atexit` flush and `on_session_finalize`: a job loses the events of its last flush interval (~2 s), and a job that short shows only its `session` event and is missing from `/api/jobs`. Verify job tagging with a job of several tool steps (O9 status O14).
++- Agent identity is a nullable `token_events.agent` column, never a tag. Task agent fields are derived from
++  that task's counted LLM calls; they are not copied from a parent task or stored on `tasks`.
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index b5ef119..01eebbe 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -137,6 +137,23 @@ Hermes turn (plugin 0c: task_hierarchy, parent session/turn, composition counts,
+ - The evaluator is a separate trust boundary: the scrubbed prompt leaves the machine; every call is reserved in `evaluator_attempts` first; its own usage is a `token-inspector` event that is never scored.
+ - The plugin spools undeliverable batches to disk (fsync, dead-letter) and never holds a prompt past capture time + 30 days.
+ 
++## Claude Code agent and complexity data (schema v13)
++
++Agent resolution is run-local and bound to each transcript cursor. A primary transcript is `main`; a
++`SubagentStop` binds its sanitized hook `agent_type`; a later drain reuses that binding, then tries only the
++bounded sibling sidecar's `agentType`, and otherwise uses `unknown`. A file-identity/reset mismatch clears the
++binding. Raw agent ids, names and transcript locations never enter state or events.
++
++The sanitized label is stored on each `token_events.agent` column, not in tags. Task list/detail and export
++derive agent, conflict and unavailable-call fields from that task's own counted snapshot calls. Claude Code
++complexity is `cc-input-size-v1`, a numeric input-plus-cache tier that is deliberately separate from and not
++comparable with Hermes `request-shape-v1`.
++
++`GET /api/analytics/agents` reads one bounded snapshot over `[from,to)`, grouping counted calls by UTC day,
++runtime, nullable agent, nullable method/tier and model. It retains unpriced and unscored calls, reports global
++distinct tasks separately from per-cell tasks, and fails with `result_too_large` instead of truncating. This is
++a read contract; there is no Agents dashboard tab in this change.
++
+ ## Runtime State
+ 
+ ```text
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 6abd53a..1adc037 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -10,6 +10,11 @@ All notable user-visible and operational changes are documented here.
+ 
+ ### Added
+ 
++- Schema v13 data layer (not an Agents dashboard tab): Claude Code emits privacy-gated per-run agent labels
++  and the separate `cc-input-size-v1` call tier; events store `agent`, tasks derive agent/conflict/missing and
++  method-qualified start complexity, export v1 adds snapshot-derived fields, and `GET /api/analytics/agents`
++  provides a bounded read contract. Coverage begins at deployment; named labels are not guaranteed.
++
+ - Complexity view: tier × model comparison (calls, tasks, per-call and per-task token split, latency, TTFT, error rate, priced cost per task, completion counts, low-sample marks) with project/model/method/day filters, backed by the new `GET /api/analytics/complexity-matrix`; the demo seed now carries per-call tiers and two priced models.
+ - Task telemetry (schema v10): one task per Hermes turn, derived at ingest and backfilled metadata-only, with deterministic start complexity, arrival-order-independent completion and hierarchy from subagent starts.
+ - Tasks view and Tasks API (list, detail, blind labels), `/api/meta` feature gates and config preflight.
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 831215f..c48d5f0 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -44,7 +44,10 @@ Production runs O9 since 2026-10-03 (backend `main` on the O9 branch head, schem
+ - Requested model, resolved model, and pricing model remain distinct.
+ - Unknown pricing is `unpriced/no_rule`; never represent it as free.
+ - Task prompts and JEV are limited to projects on both allowlists (backend `TASK_PROMPT_ALLOWED_PROJECTS`, plugin `task_prompt_allowed_projects`; empty = off) and to proven root tasks; `-devir` hand-off clones are path-denied in the plugin.
+-- Deterministic complexity uses `request-shape-v1` numeric metadata, not raw prompt semantics.
++- Deterministic complexity methods are `request-shape-v1` (Hermes request shape) and `cc-input-size-v1`
++  (Claude Code input plus cache tokens). They are method-qualified and not comparable tier-for-tier.
++- Sanitized agent identity is stored in nullable `token_events.agent`, never tags; task agent fields are
++  derived from counted calls and can report conflicts or unavailable calls.
+ - Filesystem repository inventory and event-backed observed activity are different datasets.
+ - The versioned export (`/api/export/v1/*`, schema v12) reads a snapshot by `token_events.ingest_seq`; any write that deletes or rewrites stored `token_events` rows must bump `export_state.revision` in the same transaction (AGENTS.md Gotchas, ADR-005).
+ - Absolute workspace paths and complete Git remote URLs must not enter telemetry storage.
+@@ -120,6 +123,11 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
+ 
+ ## Recurring Problems
+ 
++0. **CC agent label resolves to `unknown` after a backlog/resume drain**
++   - A stored run binding is authoritative. Without one, the producer reads only the bounded sibling
++     `agent-<id>.meta.json` `agentType`; if that evidence is absent or invalid, `unknown` is intentional.
++   - Do not infer a name from the transcript path, raw agent id, description, hostname or transcript content.
++
+ 1. **Phantom project attribution**
+    - Check event `session_id`, `trace_id`, timestamp, and tags `project_source`/`project_confidence`.
+    - Do not infer activity from filesystem presence.
+diff --git a/README.md b/README.md
+index 36a6250..ada2dec 100644
+--- a/README.md
++++ b/README.md
+@@ -40,8 +40,8 @@ Apply it with `systemctl --user daemon-reload && systemctl --user restart token-
+ | Overview | Stat cards (input, cache read, cache write and output tokens shown separately, plus their labelled sum), daily stacked token-type bars with a cost line, top models by cost, per-project table with one column per token type |
+ | Projects | Separates bounded Git repository inventory (including repositories with zero events) from event-backed observed activity; select either identity for filtered analytics |
+ | Models | Cross-project latency bar chart, cost comparison table |
+-| Complexity | Per-call `request-shape-v1` tier (1–5), filterable by project, model, method and 7/30/90 days: a calls/tasks/tokens/cost-per-tier chart split by model, a per-tier volume table (calls, tasks, input / cache read / cache write / output with per-call and per-task averages) and a tier × model table (per-task and per-call tokens, latency, TTFT, error rate, priced cost per task with unpriced calls shown, completion counts, low-sample and lowest-cost/latency marks); routing recommendations table |
+-| Tasks | One row per task (a Hermes turn): request-shape-v1 start complexity, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state; a start-complexity vs JEV scatter; a detail panel with probabilities, child tasks and evaluations. Never shows prompt text |
++| Complexity | Per-call complexity by method. Hermes uses `request-shape-v1`; Claude Code uses the separate, non-comparable `cc-input-size-v1` input-size tier. Existing charts remain method-filtered; this data-layer change does not add an Agents dashboard tab |
++| Tasks | One row per task (a turn): method-qualified start complexity plus a derived sanitized agent label/conflict/missing-call summary, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state. Never shows prompt text |
+ | Jobs | One row per launcher job (`job_ref`), filterable by runtime, work type and 7/30/90 days: work type, runtime, projects, tasks, calls, the four token types and their sum, priced cost with the unpriced count (never `$0`), estimated cost, first/last event (not job duration), attempts and conflicts (calls / tasks); an anomaly line for job conflicts and invalid attribution. Below the table, **Export (v1)** downloads jobs, tasks or LLM calls for a UTC date range as CSV (built in the browser from the JSON export, same fields, formula-injection guarded) and links the JSON first page |
+ | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
+ 
+@@ -127,7 +127,7 @@ python scripts/repair_task_parents.py --db "$DB_PATH" --apply    # verified onli
+ 
+ `--backup-dir DIR` puts the backup elsewhere (default: next to the DB, `<db>.bak-repair-<UTC stamp>`). Output is one count per class, never refs or names.
+ 
+-**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 11` (or `--to 10`; service stopped; exact source-version guard, SQLite ≥ 3.35). `--to 11` runs `scripts/rollback_v12.sql`; `--to 10` runs it and then `scripts/rollback_v11.sql`, one step per transaction. The runner names the app commit to start afterwards.
++**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 12` (or an older registered target; service stopped; exact source-version guard, SQLite ≥ 3.35). Schema v13 rolls back through `scripts/rollback_v13.sql`, one step per transaction.
+ 
+ ## Versioned read-only export (O9, schema v12)
+ 
+@@ -149,6 +149,11 @@ curl -s "http://127.0.0.1:8100/api/export/v1/events?from=2026-09-01T00:00:00Z&to
+ 
+ `producers/claude_code/` is a stdlib-only Claude Code hook (`Stop`, `SubagentStop`, `SessionEnd`) that sends one `llm_request` event per API call from the session transcript: allowlisted metadata only, never prompt or response text, tool data or paths. It is bounded to 5 s per hook, fail-open, and at-least-once with idempotent `cc-` event ids that are unique across projects ([ADR-004](docs/adr/004-cross-source-dedup-authority.md)). Install, configuration, sent fields and limits: [producers/claude_code/README.md](producers/claude_code/README.md).
+ 
++Schema v13 adds deploy-onward Claude Code call data: a sanitized agent label in the `agent` column and
++`cc-input-size-v1`, computed from input plus cache-read plus cache-creation tokens. `GET /api/analytics/agents`
++provides the bounded UTC-range read contract. Historic calls are not backfilled, and unverifiable drains are
++labelled `unknown`; named labels are not guaranteed for every run. This is API/data support only, not an Agents tab.
++
+ > **Status:** installed on Windows and on hermes since 2026-10-03 (O9 deploy). `install.py` defaults to a content-free dry-run summary; `--apply` / `--uninstall --apply` change the global `~/.claude/settings.json` and are user-approved steps. On Windows the producer URL lives in `~/.config/token-inspector/claude-code.json` (never in repo files).
+ 
+ ## Connecting Hermes or any other project
+diff --git a/docs/adr/006-agent-identity-and-cc-complexity.md b/docs/adr/006-agent-identity-and-cc-complexity.md
+new file mode 100644
+index 0000000..00770b8
+--- /dev/null
++++ b/docs/adr/006-agent-identity-and-cc-complexity.md
+@@ -0,0 +1,75 @@
++# ADR-006: Agent identity and Claude Code input-size complexity
++
++- Status: Accepted
++- Date: 2026-10-03
++- Scope: schema v13 data layer; no Agents dashboard tab
++
++## Context
++
++Claude Code transcripts identify subagent runs, but raw ids, names, paths and sidecar descriptions are not safe
++telemetry dimensions. A label answers “which sanitized agent category produced this call”; it is not a run
++identity. Run correlation remains the existing pseudonymized session/turn/task structure.
++
++Claude Code also lacks the request-time message shape used by Hermes `request-shape-v1`. Assigning that method
++to transcript usage would make incomparable evidence appear comparable.
++
++## Decision
++
++### Agent label
++
++The producer binds one sanitized label to each transcript run. Resolution precedence is:
++
++1. an existing state binding for the same run/file identity;
++2. the current `SubagentStop.agent_type` hook value;
++3. only the sibling `agent-<id>.meta.json` `agentType` value, read with a 64 KiB cap;
++4. `unknown`.
++
++Primary transcripts use the producer-generated label `main`. File truncation, replacement or run-key mismatch
++clears the old binding before resolution. No hook value may leak to a different target transcript.
++
++Custom names are default-deny. The producer passes a custom name only in `allowlist` mode when its complete
++value matches the safe grammar, is an exact allowlist member, and case-insensitively differs from every detected
++local hostname candidate. Otherwise it emits `a-` plus the first 16 lowercase hexadecimal characters of
++SHA-256 over the complete source value. Source values equal to reserved producer labels (`main`, `custom`,
++`unknown`) are also pseudonymized. Values that are missing, non-string or longer than 64 characters become
++`unknown`. Values are never trimmed, lowercased, slugified, decoded or partially salvaged.
++
++The backend validates fail-open: an invalid agent becomes null and never rejects or echoes the event. The label
++is a nullable `token_events.agent` column, not a tag. Task `agent`, `agent_conflict` and
++`agent_unavailable_calls` are derived from that task's own counted calls. Export derives them from snapshot
++events, never unrestricted live events.
++
++### Claude Code complexity
++
++`cc-input-size-v1` uses only:
++
++```text
++I = input_tokens + cache_read_input_tokens + cache_creation_input_tokens
++```
++
++Its tiers are `[0,4000)`, `[4000,16000)`, `[16000,64000)`, `[64000,128000)`, and `[128000,+∞)`.
++All three inputs must be present non-negative integers; malformed usage is unscored. Output tokens, text, tools,
++price and elapsed time do not contribute. `input_tokens_include_cache=false` remains unchanged: emitted
++`prompt_tokens` already excludes cache.
++
++`cc-input-size-v1` and `request-shape-v1` have separate method names and are not comparable tier-for-tier.
++Task start complexity retains the actual method of the earliest eligible counted LLM call.
++
++### Read contract and coverage
++
++`GET /api/analytics/agents` groups counted calls by UTC day, runtime, nullable agent, nullable method/tier and
++model within an explicit bounded range. It excludes evaluator and invalid-attribution calls, retains unpriced
++and unscored calls by default, and reports global distinct tasks separately from cell task counts. More than
++20,000 cells returns a static `result_too_large` error rather than truncation.
++
++Agent and Claude Code complexity coverage starts when schema-v13-compatible producers are deployed. Historical
++calls are not backfilled. A named label is not promised for every run; unverifiable resumed/backlog drains are
++`unknown`.
++
++## Consequences
++
++- Agent labels are privacy-bounded, stable where pseudonymized, and cannot spoof reserved producer meanings.
++- State grows by only a bounded four-key agent block and remains under its 4096-byte cap.
++- Sidecar work is one bounded local read per unresolved drained subagent, inside the existing hook budget.
++- Consumers must retain method identity when comparing complexity and must handle null agent/tier values.
++- Export v1 gains additive fields; unknown complexity methods remain omitted, so the contract version stays 1.
+diff --git a/docs/export-contract-v1.md b/docs/export-contract-v1.md
+index 091a43e..df28272 100644
+--- a/docs/export-contract-v1.md
++++ b/docs/export-contract-v1.md
+@@ -5,7 +5,7 @@
+ **Design record:** [ADR-005](adr/005-export-contract.md)
+ 
+ This contract is versioned **separately** from the Token Inspector application version and from the
+-database schema version (`/api/meta` `schema_version`, currently 12). The export `schema_version`
++database schema version (`/api/meta` `schema_version`, currently 13). The export `schema_version`
+ changes **only on a breaking change** (a removed or renamed field, a changed type or meaning).
+ Adding a field is not a breaking change: **consumers must ignore unknown fields.**
+ 
+@@ -161,7 +161,8 @@ They are never collapsed into each other. Units: token counts are integers; cost
+ | `tool_call_count` | integer | tool calls requested by the response | `null` when not reported | — |
+ | `role` | string | `primary`, `subagent`, `evaluator` (else `other`); `evaluator` appears only for non-excluded events | `null` when none | closed list |
+ | `complexity` | integer | deterministic tier 1–5 | `null` when not scored | — |
+-| `complexity_method` | string | `request-shape-v1` | **absent** for any other or no method | closed list |
++| `complexity_method` | string | `request-shape-v1` or `cc-input-size-v1` | **absent** for any other or no method | closed list; unknown methods are omitted |
++| `agent` | string | sanitized per-call agent label | `null` when unavailable | `main`, `custom`, `unknown`, safe name, or `a-` pseudonym |
+ 
+ ## Fields: tasks
+ 
+@@ -183,6 +184,11 @@ They are never collapsed into each other. Units: token counts are integers; cost
+ | `wall_time_ms` | integer | `last_event_at - first_event_at` (not end-to-end task time) | never absent | — |
+ | `completion` | string | how the task ended (live; not success) | never absent | server-derived |
+ | `completed_at` | string | completion time (live) | `null` while open | ISO-8601 `Z` |
++| `agent` | string | single distinct agent across the task's counted snapshot calls | `null` when absent or conflicting | agent value rule |
++| `agent_conflict` | boolean | two or more distinct non-null snapshot agent labels | never absent | — |
++| `agent_unavailable_calls` | integer | counted snapshot calls with null agent | never absent | — |
++| `start_complexity` | integer | earliest eligible snapshot call tier | `null` when unscored | 1–5 |
++| `start_complexity_method` | string | method of that earliest eligible call | `null` when unscored | registered method |
+ | `llm_request_count` | integer | counted calls | never absent | — |
+ | `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens` | integer | token sums | never absent | — |
+ | `priced_count` | integer | priced calls | never absent | — |
+@@ -231,6 +237,10 @@ Prompt text of any kind (raw prompts, task prompts), label notes, legacy `error_
+ arguments and tool names, `prompt_hash`, `prompt_length`, `user_id_hash`, full `tags`,
+ `request_tool_names`, trace and span ids, file paths, hostnames, JEV scores.
+ 
++Event `agent`, task agent fields and task start-complexity fields are derived only from snapshot events
++(`ingest_seq <= as_of`). Adding these fields is additive and not a breaking export-v1 change. Consumers must
++ignore unknown fields; an unregistered complexity method is omitted rather than emitted as a new value.
++
+ ## Value rules and the privacy residual
+ 
+ A key allowlist is not enough, so every exported string also passes a value rule:
+diff --git a/migrations.py b/migrations.py
+index 858b148..e905bea 100644
+--- a/migrations.py
++++ b/migrations.py
+@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
+ 
+ import task_store
+ 
+-LATEST_SCHEMA_VERSION = 12
++LATEST_SCHEMA_VERSION = 13
+ Migration = Callable[[AsyncConnection], Awaitable[None]]
+ 
+ 
+@@ -373,6 +373,19 @@ async def _m12(conn: AsyncConnection) -> None:
+     )
+ 
+ 
++async def _m13(conn: AsyncConnection) -> None:
++    """Claude Code agent identity column and call-analysis index."""
++    await _add_columns(conn, "token_events", {"agent": "VARCHAR(64)"})
++    await conn.execute(
++        text(
++            "CREATE INDEX IF NOT EXISTS ix_token_events_call_time_agent ON token_events "
++            "(COALESCE(occurred_at, recorded_at), agent, complexity_method, complexity, model) "
++            "WHERE event_type = 'llm_request'"
++        )
++    )
++    await conn.execute(text("UPDATE export_state SET revision = revision + 1 WHERE id = 1"))
++
++
+ MIGRATIONS: list[tuple[int, Migration]] = [
+     (1, _m1),
+     (2, _m2),
+@@ -386,6 +399,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
+     (10, _m10),
+     (11, _m11),
+     (12, _m12),
++    (13, _m13),
+ ]
+ 
+ 
+diff --git a/models.py b/models.py
+index e32f1bb..de5baf5 100644
+--- a/models.py
++++ b/models.py
+@@ -100,6 +100,7 @@ class TokenEvent(SQLModel, table=True):
+     request_file_ref_count: Optional[int] = None
+     request_tool_names_json: Optional[str] = None
+     ingest_seq: Optional[int] = None
++    agent: Optional[str] = Field(default=None, max_length=64)
+ 
+ 
+ class Task(SQLModel, table=True):
+diff --git a/producers/claude_code/README.md b/producers/claude_code/README.md
+index 1a597e9..8a0eb5f 100644
+--- a/producers/claude_code/README.md
++++ b/producers/claude_code/README.md
+@@ -33,6 +33,8 @@ Global hooks take effect in running Claude Code sessions immediately, without a
+ | URL | env `TOKEN_INSPECTOR_URL` → `url` in `~/.config/token-inspector/claude-code.json` → `http://127.0.0.1:8100` |
+ | Ingest token | env `TOKEN_INSPECTOR_API_KEY` → first line of `token_file` (default `~/.config/token-inspector/ingest-token`); none → no header |
+ | Project aliases | env `TOKEN_INSPECTOR_PROJECT_ALIASES` (JSON object: absolute workspace root → name) → `project_aliases` in the config file |
++| Agent name policy | env `TOKEN_INSPECTOR_AGENT_NAME_MODE` (`deny` or `allowlist`) → `agent_name_mode`; default `deny` |
++| Agent name allowlist | env `TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST` (JSON array of exact strings) → `agent_name_allowlist`; default empty |
+ | Job context | `TOKEN_INSPECTOR_JOB_REF`, `TOKEN_INSPECTOR_WORK_TYPE`, `TOKEN_INSPECTOR_JOB_ATTEMPT` (set by `hermes.sh devir-baslat`; same contract and shapes as the plugin) |
+ 
+ On Windows the URL is the tailnet HTTPS name allowed by the backend host allowlist; keep it in env or the config file, never in repo files. The token is never logged, printed or stored in state.
+@@ -41,9 +43,9 @@ Project name: alias (longest matching root) → sanitized git `origin` slug →
+ 
+ ## What is sent
+ 
+-Only these fields: `client_event_id`, `event_type`, `occurred_at`, `provider` (`anthropic`), `model` (`claude-…` or `unknown`), `session_id`, `turn_id`, `task_hierarchy`, `parent_session_id`, `parent_turn_id`, `parent_project_name`, `role` (`primary`/`subagent`), `prompt_tokens` (input without cache), `cache_read_tokens`, `cache_creation_tokens`, `completion_tokens`, `input_tokens_include_cache` (`false`), `status`, `error_type` (`api_error` only), `finish_reason` (closed list `end_turn`, `max_tokens`, `stop_sequence`, `tool_use`, `pause_turn`, `refusal`, `model_context_window_exceeded`; any other value omitted), `tool_call_count`, and tags `runtime`, `producer`, `project_source`, `schema`, `job_ref`, `work_type`, `job_attempt`.
++Only these fields: `client_event_id`, `event_type`, `occurred_at`, `provider` (`anthropic`), `model` (`claude-…` or `unknown`), `session_id`, `turn_id`, `task_hierarchy`, `parent_session_id`, `parent_turn_id`, `parent_project_name`, `role` (`primary`/`subagent`), `agent`, `complexity`, `complexity_method`, `prompt_tokens` (input without cache), `cache_read_tokens`, `cache_creation_tokens`, `completion_tokens`, `input_tokens_include_cache` (`false`), `status`, `error_type` (`api_error` only), `finish_reason` (closed list), `tool_call_count`, and allowlisted tags.
+ 
+-Session, turn and parent ids are `sha256(raw)[:32]` pseudonyms; `client_event_id` is `cc-` + a hash of `message.id` and `requestId` (ADR-004). **Never sent:** prompt or response text (the producer never sends prompt text, under any setting), tool names, inputs or outputs, `cwd`, transcript paths, git branch, version, skill or agent names, hostnames, `error_message`, `request_tool_names`.
++Session, turn and parent ids are `sha256(raw)[:32]` pseudonyms; `client_event_id` is `cc-` + a hash of `message.id` and `requestId` (ADR-004). Agent names are sent **only** as a sanitized label: `main`, a verified built-in, an exact safe allowlisted custom name that is not a detected local identifier, a stable `a-` pseudonym, or `unknown`. Raw names, ids and locations never leave. Default-deny pseudonymizes custom names; reserved source labels cannot spoof producer meanings. **Never sent:** prompt or response text, tool names/arguments/results, `cwd`, transcript paths, git branch, version, hostnames, `error_message`, `request_tool_names`.
+ 
+ One user turn (the transcript `promptId`) is one task; a subagent run is a child task linked to the turn that started it.
+ 
+@@ -53,5 +55,9 @@ One user turn (the transcript `promptId`) is one task; a subagent run is a child
+ - **At-least-once + idempotent:** the cursor advances after each acknowledged batch, never past a streaming call whose final usage is not yet on disk. Items the backend rejects are dropped and counted.
+ - **State:** `%LOCALAPPDATA%\token_inspector_cc\` (Windows) or `~/.local/state/token_inspector_cc/`: one small file per transcript (offset, turn id, file identity, pending flag, project name and job keys), a lock per transcript, `counters.json` (integers only). At most 512 state files.
+ - **Backlog:** work left over (budget) is marked pending and drained by later hooks of the same project directory. A directory where no hook ever fires again keeps its backlog until one does.
++- **Agent limitation:** a backlog/resume drain reuses a stored run binding, else reads only the bounded sibling
++  sidecar `agentType`; without verifiable evidence it emits `unknown`. A named label is not available for every run.
++- **Complexity:** `cc-input-size-v1` uses only input + cache-read + cache-creation tokens. Missing/invalid input
++  usage stays unscored; the method is not comparable to `request-shape-v1`.
+ - **Not measured:** calls that leave no usage record (API errors appear only as zero-usage `<synthetic>` lines), and an interrupted last call of a session that has no `stop_reason` until the session continues.
+ - A resumed copy that resolves to another project is counted once, in the project of first arrival.
+diff --git a/producers/claude_code/cc_agent.py b/producers/claude_code/cc_agent.py
+new file mode 100644
+index 0000000..8d39340
+--- /dev/null
++++ b/producers/claude_code/cc_agent.py
+@@ -0,0 +1,50 @@
++"""Privacy-safe Claude Code agent label resolution. Stdlib only."""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import re
++from pathlib import Path
++from typing import Optional
++
++AGENT_MAX = 64
++RESERVED = ("main", "custom", "unknown")
++BUILTIN = ("general-purpose", "fork")
++SAFE_AGENT_RE = re.compile(
++    r"^(?:[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$"
++)
++_META_MAX = 64 * 1024
++
++
++def pseudonym(value: str) -> str:
++    return "a-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
++
++
++def sanitize(value, *, mode, allowlist, local_names) -> str:
++    if not isinstance(value, str) or not value or len(value) > AGENT_MAX:
++        return "unknown"
++    if value in RESERVED:
++        return pseudonym(value)
++    if value in BUILTIN:
++        return value
++    local = {name.lower() for name in local_names if isinstance(name, str)}
++    if (mode == "allowlist" and SAFE_AGENT_RE.fullmatch(value) and value in allowlist
++            and value.lower() not in local):
++        return value
++    return pseudonym(value)
++
++
++def read_sidecar_agent_type(path: str) -> Optional[str]:
++    try:
++        transcript = Path(path)
++        if transcript.parent.name != "subagents" or not transcript.name.startswith("agent-"):
++            return None
++        sidecar = transcript.with_suffix(".meta.json")
++        if sidecar.stat().st_size > _META_MAX:
++            return None
++        data = json.loads(sidecar.read_bytes().decode("utf-8"))
++        value = data.get("agentType") if isinstance(data, dict) else None
++        return value if isinstance(value, str) and value else None
++    except Exception:
++        return None
+diff --git a/producers/claude_code/cc_attribution.py b/producers/claude_code/cc_attribution.py
+index 2c67635..2f5b6cd 100644
+--- a/producers/claude_code/cc_attribution.py
++++ b/producers/claude_code/cc_attribution.py
+@@ -119,6 +119,11 @@ def _host_names() -> set[str]:
+     return names
+ 
+ 
++def local_names() -> set[str]:
++    """Detected local hostname candidates; values are only used for local rejection."""
++    return _host_names()
++
++
+ def _acceptable(name: Optional[str], hosts: set[str]) -> bool:
+     return (bool(name) and bool(_NAME_RE.fullmatch(name)) and name not in hosts
+             and not _IPV4_RE.fullmatch(name))
+diff --git a/producers/claude_code/cc_complexity.py b/producers/claude_code/cc_complexity.py
+new file mode 100644
+index 0000000..6132dba
+--- /dev/null
++++ b/producers/claude_code/cc_complexity.py
+@@ -0,0 +1,23 @@
++"""Claude Code request input-size complexity. Stdlib only."""
++
++from __future__ import annotations
++
++from typing import Optional
++
++METHOD = "cc-input-size-v1"
++
++
++def input_size_tier(input_tokens, cache_read, cache_creation) -> Optional[int]:
++    values = (input_tokens, cache_read, cache_creation)
++    if any(type(value) is not int or value < 0 for value in values):
++        return None
++    total = sum(values)
++    if total < 4000:
++        return 1
++    if total < 16000:
++        return 2
++    if total < 64000:
++        return 3
++    if total < 128000:
++        return 4
++    return 5
+diff --git a/producers/claude_code/cc_config.py b/producers/claude_code/cc_config.py
+index 665de50..d703dfc 100644
+--- a/producers/claude_code/cc_config.py
++++ b/producers/claude_code/cc_config.py
+@@ -32,6 +32,8 @@ class Config:
+     token: Optional[str] = None
+     aliases: dict[str, str] = field(default_factory=dict)
+     state_dir: Path = Path(".")
++    agent_name_mode: str = "deny"
++    agent_name_allowlist: tuple = ()
+ 
+ 
+ def runtime() -> Optional[str]:
+@@ -72,6 +74,15 @@ def _aliases(raw: Any) -> dict[str, str]:
+     return out
+ 
+ 
++def _agent_allowlist(raw: Any) -> tuple:
++    return tuple(value for value in raw if isinstance(value, str)) if isinstance(raw, list) else ()
++
++
++def local_names() -> set[str]:
++    import cc_attribution
++    return cc_attribution.local_names()
++
++
+ def _read_json(path: Path) -> dict[str, Any]:
+     try:
+         data = json.loads(path.read_bytes().decode("utf-8"))
+@@ -104,11 +115,22 @@ def load() -> Config:
+             raw_aliases = json.loads(env_aliases)
+         except Exception:
+             raw_aliases = {}
++    mode = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_MODE", "").strip() or file_cfg.get("agent_name_mode")
++    mode = mode if mode in ("deny", "allowlist") else "deny"
++    raw_agent_allowlist: Any = file_cfg.get("agent_name_allowlist")
++    env_agent_allowlist = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", "").strip()
++    if env_agent_allowlist:
++        try:
++            raw_agent_allowlist = json.loads(env_agent_allowlist)
++        except Exception:
++            raw_agent_allowlist = []
+     return Config(
+         url=str(url).rstrip("/"),
+         token=_token(file_cfg),
+         aliases=_aliases(raw_aliases),
+         state_dir=state_dir(),
++        agent_name_mode=mode,
++        agent_name_allowlist=_agent_allowlist(raw_agent_allowlist),
+     )
+ 
+ 
+diff --git a/producers/claude_code/cc_events.py b/producers/claude_code/cc_events.py
+index cc297d2..064b515 100644
+--- a/producers/claude_code/cc_events.py
++++ b/producers/claude_code/cc_events.py
+@@ -1,9 +1,8 @@
+ """Transcript record -> ingest event with an explicit field allowlist (O9 C3, C8). Stdlib only.
+ 
+-Never sent: any text, cwd, transcript_path, gitBranch, version, userType, hostnames, tool names or
+-inputs, skill or agent names, request_tool_names, error_message, prompt fields (D10: the Claude Code
+-producer never sends prompt text). Raw Claude Code ids never leave the machine: session, turn, parent
+-and agent ids are pseudonymized, client_event_id is a hash of message.id + requestId.
++Agent names are sent only as a sanitized label (main / a verified built-in / an allowlisted custom name /
++a stable pseudonym / unknown); raw names, ids and locations never leave. Prompt/response text, tool inputs,
++hostnames and raw Claude Code ids never leave the machine.
+ """
+ 
+ from __future__ import annotations
+@@ -14,12 +13,14 @@ from datetime import datetime, timezone
+ from typing import Any, Optional
+ 
+ import cc_config
++import cc_complexity
+ 
+ ALLOWED_FIELDS = frozenset({
+     "client_event_id", "event_type", "occurred_at", "provider", "model", "session_id", "turn_id",
+     "task_hierarchy", "parent_session_id", "parent_turn_id", "parent_project_name", "role",
+     "prompt_tokens", "cache_read_tokens", "cache_creation_tokens", "completion_tokens",
+-    "input_tokens_include_cache", "status", "error_type", "finish_reason", "tool_call_count", "tags",
++    "input_tokens_include_cache", "status", "error_type", "finish_reason", "tool_call_count", "tags", "agent",
++    "complexity", "complexity_method",
+ })
+ TAG_KEYS = frozenset({"runtime", "producer", "job_ref", "work_type", "job_attempt", "project_source", "schema"})
+ MODEL_RE = re.compile(r"^claude-[a-z0-9.-]{1,64}$")
+@@ -57,6 +58,7 @@ def build_event(
+     project_source: str,
+     job: dict[str, Any],
+     subagent: bool,
++    agent: Optional[str] = None,
+ ) -> Optional[dict[str, Any]]:
+     """One llm_request event, or None when the record lacks the ids a task needs."""
+     if not record.session_raw:
+@@ -77,6 +79,14 @@ def build_event(
+     }
+     if record.error:
+         event["error_type"] = "api_error"
++    if isinstance(agent, str) and agent:
++        event["agent"] = agent
++    if record.usage_valid:
++        tier = cc_complexity.input_size_tier(usage["input_tokens"], usage["cache_read_input_tokens"],
++                                             usage["cache_creation_input_tokens"])
++        if tier is not None:
++            event["complexity"] = tier
++            event["complexity_method"] = cc_complexity.METHOD
+     occurred = _occurred_at(record.timestamp)
+     if occurred:
+         event["occurred_at"] = occurred
+diff --git a/producers/claude_code/cc_hook.py b/producers/claude_code/cc_hook.py
+index 967c6c8..2247cc7 100644
+--- a/producers/claude_code/cc_hook.py
++++ b/producers/claude_code/cc_hook.py
+@@ -30,6 +30,7 @@ if __name__ == "__main__":
+ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ 
+ try:
++    import cc_agent  # noqa: E402
+     import cc_attribution  # noqa: E402
+     import cc_client  # noqa: E402
+     import cc_config  # noqa: E402
+@@ -79,6 +80,24 @@ def _is_subagent(path: str) -> bool:
+     return p.parent.name == "subagents" and p.stem.startswith("agent-")
+ 
+ 
++_AGENT_KEYS = ("agent", "agent_source", "agent_run_key", "agent_policy_version")
++
++
++def _without_agent(ctx: dict[str, Any]) -> dict[str, Any]:
++    return {key: value for key, value in ctx.items() if key not in _AGENT_KEYS}
++
++
++def _agent_block(cfg: cc_config.Config, path: str, source: str, value: Any = None) -> dict[str, Any]:
++    subagent = _is_subagent(path)
++    run_key = cc_events.pseudonym(Path(path).stem[len("agent-"):]) if subagent else cc_state.key_for(path)
++    if source == "main":
++        label = "main"
++    else:
++        label = cc_agent.sanitize(value, mode=cfg.agent_name_mode, allowlist=cfg.agent_name_allowlist,
++                                  local_names=cc_config.local_names())
++    return {"agent": label, "agent_source": source, "agent_run_key": run_key, "agent_policy_version": 1}
++
++
+ def process_file(run: _Run, path: str, *, ctx: Optional[dict[str, Any]] = None, max_windows: int = 0) -> None:
+     """Send the final records of one transcript, checkpointing after every acknowledged batch.
+     `ctx` None = use the context stored in the file's state (drain); skip the file without one."""
+@@ -99,16 +118,36 @@ def process_file(run: _Run, path: str, *, ctx: Optional[dict[str, Any]] = None,
+             if ctx is None:
+                 return
+         offset, turn = 0, None
++        same_file = False
++        reset = False
+         if state is not None:
+             offset, turn = state["offset"], state["turn_uuid"]
+             same_file = state["file_id"] == file_id or (st.st_ino == 0 and state["file_id"][1] == 0)
+             if st.st_size < offset or not same_file:
+                 offset, turn = 0, None  # shortened or replaced: re-send is safe (idempotent insert)
++                reset = True
+                 run.counters["truncation_resets"] += 1
+-                cc_state.save(run.cfg.state_dir, key, offset=0, turn=None, file_id=file_id, pending=True,
+-                              ctx=ctx, reset=True)
+         subagent = _is_subagent(path)
+         agent_fallback = Path(path).stem[len("agent-"):] if subagent else None
++        expected_run_key = cc_events.pseudonym(agent_fallback) if subagent else key
++        supplied = ctx if ctx.get("agent_run_key") == expected_run_key else None
++        stored = state.get("ctx") if state and same_file and not reset else None
++        bound = stored if stored and stored.get("agent_run_key") == expected_run_key else None
++        base = _without_agent(ctx)
++        if bound is not None:
++            resolved = bound
++        elif supplied is not None:
++            resolved = supplied
++        elif subagent:
++            sidecar = cc_agent.read_sidecar_agent_type(path)
++            source = "sidecar" if sidecar is not None else "unknown"
++            resolved = _agent_block(run.cfg, path, source, sidecar)
++        else:
++            resolved = _agent_block(run.cfg, path, "main")
++        ctx = dict(base, **{name: resolved[name] for name in _AGENT_KEYS})
++        if state is not None and (st.st_size < state["offset"] or not same_file):
++            cc_state.save(run.cfg.state_dir, key, offset=0, turn=None, file_id=file_id, pending=True,
++                          ctx=ctx, reset=True)
+ 
+         cursor = [offset, turn]
+ 
+@@ -127,7 +166,8 @@ def process_file(run: _Run, path: str, *, ctx: Optional[dict[str, Any]] = None,
+             pairs = []
+             for record in win.records:
+                 event = cc_events.build_event(record, runtime=run.runtime, project=ctx["project"],
+-                                              project_source=ctx["project_source"], job=ctx["job"], subagent=subagent)
++                                              project_source=ctx["project_source"], job=ctx["job"], subagent=subagent,
++                                              agent=ctx["agent"])
+                 if event is None:
+                     run.counters["skipped_records"] += 1
+                 else:
+@@ -196,7 +236,11 @@ def _drain(run: _Run, transcript: str, own_ctx: dict[str, Any], done: set[str])
+                 continue
+         elif state is not None:
+             try:
+-                if os.stat(path).st_size <= state["offset"] and not state["pending"]:
++                stat = os.stat(path)
++                same_file = state["file_id"] == [stat.st_dev, stat.st_ino] or (
++                    stat.st_ino == 0 and state["file_id"][1] == 0)
++                reset_needed = stat.st_size < state["offset"] or not same_file
++                if not reset_needed and stat.st_size <= state["offset"] and not state["pending"]:
+                     continue
+             except OSError:
+                 continue
+@@ -220,15 +264,16 @@ def _run(start: float, stdin: BinaryIO) -> Counter:
+     project, source = cc_attribution.resolve(data.get("cwd"), cfg.aliases)
+     ctx = {"project": project, "project_source": source, "job": cc_config.job_tags()}
+     run = _Run(start, cfg, runtime, ctx)
+-    targets = []
++    targets: list[tuple[str, dict[str, Any]]] = []
+     agent = data.get("agent_transcript_path")
+     if data.get("hook_event_name") == "SubagentStop" and isinstance(agent, str) and agent:
+-        targets.append(agent)
+-    targets.append(transcript)
++        raw_type = data.get("agent_type")
++        targets.append((agent, dict(ctx, **_agent_block(cfg, agent, "hook", raw_type))))
++    targets.append((transcript, dict(ctx, **_agent_block(cfg, transcript, "main"))))
+     done: set[str] = set()
+-    for target in targets:
++    for target, target_ctx in targets:
+         done.add(cc_state.key_for(target))
+-        process_file(run, target, ctx=ctx)
++        process_file(run, target, ctx=target_ctx)
+     _drain(run, transcript, ctx, done)
+     cc_state.bump_counters(cfg.state_dir, run.counters)
+     return run.counters
+diff --git a/producers/claude_code/cc_state.py b/producers/claude_code/cc_state.py
+index e1bc15a..1f05100 100644
+--- a/producers/claude_code/cc_state.py
++++ b/producers/claude_code/cc_state.py
+@@ -30,6 +30,11 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+ _JOB_REF_RE = re.compile(r"^(devir-)?[0-9]{8}-[0-9]{6}-[0-9]{1,10}$")
+ _WORK_TYPE_RE = re.compile(r"^[a-z0-9]{1,16}$")
+ _SOURCES = ("alias", "git_remote", "git_root", "fallback")
++_AGENT_SOURCES = ("main", "hook", "sidecar", "unknown")
++_AGENT_RE = re.compile(
++    r"^(?:main|custom|unknown|general-purpose|fork|a-[0-9a-f]{16}|"
++    r"[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$"
++)
+ 
+ 
+ def key_for(path: str) -> str:
+@@ -91,7 +96,17 @@ def _valid_ctx(ctx: Any) -> Optional[dict[str, Any]]:
+         clean_job["work_type"] = job["work_type"]
+     if type(job.get("job_attempt")) is int and 1 <= job["job_attempt"] <= 9999:
+         clean_job["job_attempt"] = job["job_attempt"]
+-    return {"project": project, "project_source": source, "job": clean_job}
++    clean = {"project": project, "project_source": source, "job": clean_job}
++    agent_keys = ("agent", "agent_source", "agent_run_key", "agent_policy_version")
++    present = [key in ctx for key in agent_keys]
++    if any(present):
++        agent, agent_source, run_key, version = (ctx.get(key) for key in agent_keys)
++        if (all(present) and isinstance(agent, str) and len(agent) <= 64 and _AGENT_RE.fullmatch(agent)
++                and agent_source in _AGENT_SOURCES and isinstance(run_key, str) and _KEY_RE.fullmatch(run_key)
++                and type(version) is int and version == 1):
++            clean.update({"agent": agent, "agent_source": agent_source, "agent_run_key": run_key,
++                          "agent_policy_version": version})
++    return clean
+ 
+ 
+ def load(state_dir: Path, key: str) -> Optional[dict[str, Any]]:
+diff --git a/producers/claude_code/cc_transcript.py b/producers/claude_code/cc_transcript.py
+index f698dc7..bb2ed7e 100644
+--- a/producers/claude_code/cc_transcript.py
++++ b/producers/claude_code/cc_transcript.py
+@@ -35,6 +35,7 @@ class Record:
+     request_id: Optional[str]
+     model: Any
+     usage: dict[str, int]
++    usage_valid: bool
+     stop_reason: Any
+     timestamp: Any
+     tool_use_count: int
+@@ -109,6 +110,7 @@ def _record(group: _Group, key: Optional[str], agent_fallback: Optional[str], su
+     d = group.line
+     msg = d.get("message") or {}
+     usage = msg.get("usage") or {}
++    input_fields = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+     return Record(
+         message_id=group.mid,
+         request_id=d.get("requestId") if isinstance(d.get("requestId"), str) else None,
+@@ -119,6 +121,7 @@ def _record(group: _Group, key: Optional[str], agent_fallback: Optional[str], su
+             "cache_creation_input_tokens": _int(usage.get("cache_creation_input_tokens")),
+             "output_tokens": _int(usage.get("output_tokens")),
+         },
++        usage_valid=all(type(usage.get(name)) is int and usage[name] >= 0 for name in input_fields),
+         stop_reason=msg.get("stop_reason"),
+         timestamp=d.get("timestamp"),
+         tool_use_count=len(group.tool_ids) + group.tool_blocks,
+diff --git a/routes/analytics.py b/routes/analytics.py
+index 80d3255..7360326 100644
+--- a/routes/analytics.py
++++ b/routes/analytics.py
+@@ -1,8 +1,9 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import re
+ from datetime import datetime, timedelta, timezone
+-from typing import Optional
++from typing import Any, Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException, Query
+ from sqlalchemy import case, func, select, text
+@@ -11,6 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
+ from database import get_session
+ from models import TokenEvent
+ from project_inventory import discover_projects
++from routes.events import RUNTIMES, _clean_agent
+ from routes.tasks import _completion
+ 
+ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
+@@ -57,6 +59,73 @@ def _token_sums(row) -> dict:
+     return {name: int(row[name] or 0) for name in _TOKEN_FIELDS}
+ 
+ 
++_AGENT_METHODS = ("request-shape-v1", "cc-input-size-v1")
++_ESTIMATED_COST = ("partial", "estimated", "legacy")
++AGENT_CELL_MAX = 20000
++
++
++def _iso(value: str) -> Optional[datetime]:
++    try:
++        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
++    except (TypeError, ValueError):
++        return None
++    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
++
++
++def _fmt(value: datetime) -> str:
++    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
++
++
++def _agent_bucket() -> dict[str, Any]:
++    return {"calls": 0, "tasks": set(), "calls_without_task": 0,
++            **dict.fromkeys(_TOKEN_FIELDS, 0), "priced_calls": 0, "unpriced_calls": 0,
++            "estimated_calls": 0, "priced_cost": 0.0, "estimated_cost": 0.0,
++            "latency_calls": 0, "latency_sum": 0, "ttft_calls": 0, "ttft_sum": 0}
++
++
++def _agent_add(bucket: dict, row, task_key) -> None:
++    bucket["calls"] += 1
++    if task_key is None:
++        bucket["calls_without_task"] += 1
++    else:
++        bucket["tasks"].add(task_key)
++    for name in _TOKEN_FIELDS:
++        bucket[name] += int(row[name] or 0)
++    status = row["cost_status"]
++    if status == "priced":
++        bucket["priced_calls"] += 1
++        bucket["priced_cost"] += float(row["estimated_cost_usd"] or 0)
++    elif status == "unpriced":
++        bucket["unpriced_calls"] += 1
++    elif status in _ESTIMATED_COST:
++        bucket["estimated_calls"] += 1
++        bucket["estimated_cost"] += float(row["estimated_cost_usd"] or 0)
++    if row["process_time_ms"] is not None:
++        bucket["latency_calls"] += 1
++        bucket["latency_sum"] += int(row["process_time_ms"])
++    if row["ttft_ms"] is not None:
++        bucket["ttft_calls"] += 1
++        bucket["ttft_sum"] += int(row["ttft_ms"])
++
++
++def _agent_finish(bucket: dict) -> dict[str, Any]:
++    priced = bucket["priced_calls"]
++    return {"calls": bucket["calls"], "tasks": len(bucket["tasks"]),
++            "calls_without_task": bucket["calls_without_task"],
++            **{name: bucket[name] for name in _TOKEN_FIELDS},
++            "priced_calls": priced, "unpriced_calls": bucket["unpriced_calls"],
++            "estimated_calls": bucket["estimated_calls"],
++            "priced_cost_usd": round(bucket["priced_cost"], 6) if priced else None,
++            "estimated_cost_usd": round(bucket["estimated_cost"], 6),
++            "cost_complete": bucket["calls"] > 0 and priced == bucket["calls"],
++            "latency_calls": bucket["latency_calls"],
++            "avg_process_time_ms": round(bucket["latency_sum"] / bucket["latency_calls"])
++            if bucket["latency_calls"] else None,
++            "ttft_calls": bucket["ttft_calls"],
++            "avg_ttft_ms": round(bucket["ttft_sum"] / bucket["ttft_calls"])
++            if bucket["ttft_calls"] else None}
++
++
+ @router.get("/summary")
+ async def summary(days: int = 7, session: AsyncSession = Depends(get_session)):
+     priced, estimated, unpriced = _cost_columns()
+@@ -267,11 +336,112 @@ async def timeseries(
+     ]
+ 
+ 
++@router.get("/agents")
++async def agents(
++    start: str = Query(alias="from"), end: str = Query(alias="to"), project: Optional[str] = None,
++    runtime: list[str] = Query(default=[]), agent: list[str] = Query(default=[]), agent_missing: bool = False,
++    method: list[str] = Query(default=[]), complexity: list[str] = Query(default=[]),
++    include_unscored: bool = True, model: list[str] = Query(default=[]),
++    session: AsyncSession = Depends(get_session),
++):
++    """Deploy-onward calls grouped by runtime, sanitized agent, method, tier, model and UTC day."""
++    start_dt, end_dt = _iso(start), _iso(end)
++    filters = (runtime, agent, method, complexity, model)
++    if (start_dt is None or end_dt is None or start_dt >= end_dt or end_dt - start_dt > timedelta(days=92)
++            or any(len(values) > 100 for values in filters) or (agent_missing and agent)):
++        raise HTTPException(status_code=400, detail="invalid_filter")
++    if project is not None and not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", project):
++        raise HTTPException(status_code=400, detail="invalid_filter")
++    if any(value not in RUNTIMES for value in runtime) or any(value not in _AGENT_METHODS for value in method):
++        raise HTTPException(status_code=400, detail="invalid_filter")
++    if any(_clean_agent(value) != value for value in agent):
++        raise HTTPException(status_code=400, detail="invalid_filter")
++    try:
++        tiers = [int(value) for value in complexity]
++    except ValueError:
++        raise HTTPException(status_code=400, detail="invalid_filter") from None
++    if any(tier < 1 or tier > 5 for tier in tiers):
++        raise HTTPException(status_code=400, detail="invalid_filter")
++    ts = "COALESCE(e.occurred_at, e.recorded_at)"
++    runtime_sql = "COALESCE(json_extract(e.tags_json, '$.runtime'), 'hermes-agent')"
++    where = [f"{ts} >= :start", f"{ts} < :end", "e.event_type = 'llm_request'",
++             "NOT (e.project_name = 'token-inspector' AND COALESCE(e.role, '') = 'evaluator')",
++             "COALESCE(json_extract(e.tags_json, '$.attribution_invalid'), 0) = 0"]
++    params: dict[str, Any] = {"start": _fmt(start_dt), "end": _fmt(end_dt)}
++
++    def repeated(column: str, values: list, prefix: str) -> None:
++        if values:
++            names = []
++            for index, value in enumerate(values):
++                name = f"{prefix}{index}"
++                params[name] = value
++                names.append(":" + name)
++            where.append(f"{column} IN ({', '.join(names)})")
++
++    if project is not None:
++        where.append("e.project_name = :project")
++        params["project"] = project
++    repeated(runtime_sql, runtime, "r")
++    repeated("e.agent", agent, "a")
++    if agent_missing:
++        where.append("e.agent IS NULL")
++    repeated("e.complexity_method", method, "mth")
++    repeated("e.complexity", tiers, "c")
++    repeated("e.model", model, "mdl")
++    if not include_unscored:
++        where.append("e.complexity IS NOT NULL")
++    columns = ", ".join(["e.project_name", "e.session_id", "e.turn_id", "e.agent", "e.complexity_method",
++                         "e.complexity", "e.model", "e.cost_status", "e.estimated_cost_usd",
++                         "e.process_time_ms", "e.ttft_ms", *[f"e.{name}" for name in _TOKEN_FIELDS]])
++    rows = (await session.execute(text(
++        f"SELECT {columns}, {runtime_sql} AS runtime, {ts} AS ts FROM token_events e "
++        f"WHERE {' AND '.join(where)} ORDER BY e.rowid"
++    ), params)).mappings().all()
++    buckets: dict[tuple, dict] = {}
++    totals = _agent_bucket()
++    coverage = dict.fromkeys(("agent_unavailable_calls", "agent_unknown_calls", "agent_custom_calls",
++                              "complexity_unscored_calls"), 0)
++    methods, global_tasks = set(), set()
++    for row in rows:
++        key = (row["runtime"], row["agent"], row["complexity_method"], row["complexity"], row["model"], row["ts"][:10])
++        if key not in buckets and len(buckets) >= AGENT_CELL_MAX:
++            raise HTTPException(status_code=413, detail="result_too_large")
++        task_key = ((row["project_name"], row["session_id"] or "", row["turn_id"])
++                    if row["turn_id"] not in (None, "", "unknown", "session") else None)
++        if task_key is not None:
++            global_tasks.add(task_key)
++        _agent_add(buckets.setdefault(key, _agent_bucket()), row, task_key)
++        _agent_add(totals, row, task_key)
++        coverage["agent_unavailable_calls"] += row["agent"] is None
++        coverage["agent_unknown_calls"] += row["agent"] == "unknown"
++        coverage["agent_custom_calls"] += row["agent"] == "custom"
++        coverage["complexity_unscored_calls"] += row["complexity"] is None
++        if row["complexity_method"] is not None:
++            methods.add(row["complexity_method"])
++    cells = []
++    for key, bucket in buckets.items():
++        runtime_value, agent_value, method_value, tier, model_value, day = key
++        cells.append({"runtime": runtime_value, "agent": agent_value, "complexity_method": method_value,
++                      "complexity": tier, "model": model_value, "day": day, **_agent_finish(bucket)})
++    cells.sort(key=lambda item: tuple("" if item[name] is None else str(item[name]) for name in
++                                     ("day", "runtime", "agent", "complexity_method", "complexity", "model")))
++    total_item = _agent_finish(totals)
++    total_item["tasks"] = len(global_tasks)
++    return {"contract_version": 1, "period": {"from": _fmt(start_dt), "to": _fmt(end_dt)},
++            "time_basis": "COALESCE(occurred_at, recorded_at), UTC calendar day", "tier_source": "llm_call",
++            "task_count_semantics": "global distinct project/session/turn; cells count distinct contributors",
++            "methods": sorted(methods), "coverage": coverage, "totals": total_item, "cells": cells,
++            "complete": True}
++
++
+ @router.get("/by-complexity")
+-async def by_complexity(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
++async def by_complexity(days: int = 30, project: Optional[str] = None, method: Optional[str] = None,
++                        session: AsyncSession = Depends(get_session)):
+     conditions = [*_llm_filter(days), TokenEvent.complexity.is_not(None)]
+     if project:
+         conditions.append(TokenEvent.project_name == project)
++    if method:
++        conditions.append(TokenEvent.complexity_method == method)
+     query = (
+         select(
+             TokenEvent.complexity,
+@@ -303,7 +473,8 @@ async def by_complexity(days: int = 30, project: Optional[str] = None, session:
+ 
+ 
+ @router.get("/routing-recommendations")
+-async def routing_recommendations(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
++async def routing_recommendations(days: int = 30, project: Optional[str] = None, method: Optional[str] = None,
++                                  session: AsyncSession = Depends(get_session)):
+     conditions = [
+         *_llm_filter(days),
+         TokenEvent.complexity.is_not(None),
+@@ -312,6 +483,8 @@ async def routing_recommendations(days: int = 30, project: Optional[str] = None,
+     ]
+     if project:
+         conditions.append(TokenEvent.project_name == project)
++    if method:
++        conditions.append(TokenEvent.complexity_method == method)
+     query = (
+         select(
+             TokenEvent.role,
+@@ -353,10 +526,13 @@ async def routing_recommendations(days: int = 30, project: Optional[str] = None,
+ 
+ 
+ @router.get("/by-role-model-complexity")
+-async def by_role_model_complexity(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
++async def by_role_model_complexity(days: int = 30, project: Optional[str] = None, method: Optional[str] = None,
++                                   session: AsyncSession = Depends(get_session)):
+     conditions = [*_llm_filter(days), TokenEvent.complexity.is_not(None)]
+     if project:
+         conditions.append(TokenEvent.project_name == project)
++    if method:
++        conditions.append(TokenEvent.complexity_method == method)
+     query = (
+         select(
+             TokenEvent.role,
+diff --git a/routes/events.py b/routes/events.py
+index 6ef3445..fea0914 100644
+--- a/routes/events.py
++++ b/routes/events.py
+@@ -28,6 +28,8 @@ _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+ _SECRET_TAG_RE = re.compile(r"(key|token|secret|password|auth|credential|bearer)", re.I)
+ _TRUE = {"1", "true", "yes", "on"}
+ _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-/]{1,128}$")
++_SAFE_AGENT_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$")
++_AGENT_PSEUDONYM_RE = re.compile(r"^a-[0-9a-f]{16}$")
+ # Tag byte cap: measured worst-case plugin tags (O9 J2, status.md Verification Log) before raising it.
+ TAG_BYTES_MAX = 1024
+ 
+@@ -131,6 +133,7 @@ class EventIn(BaseModel):
+     prompt_text: Optional[str] = Field(default=None, max_length=3000)
+     complexity: Optional[int] = Field(default=None, ge=1, le=5)
+     complexity_method: Optional[str] = Field(default=None, max_length=32)
++    agent: Optional[str] = Field(default=None, max_length=64)
+ 
+     # Task fields (task = one Hermes turn; the parent is identified by its session + turn).
+     task_hierarchy: Optional[Literal["root", "child", "unknown"]] = None
+@@ -191,6 +194,11 @@ class EventIn(BaseModel):
+             return value.strip().lower()
+         return None
+ 
++    @field_validator("agent", mode="before")
++    @classmethod
++    def validate_agent(cls, value: Any) -> Optional[str]:
++        return _clean_agent(value)
++
+     @field_validator("request_tool_names")
+     @classmethod
+     def validate_tool_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+@@ -216,6 +224,17 @@ def _project_name(value: str) -> str:
+     return normalized
+ 
+ 
++def _clean_agent(value: Any) -> Optional[str]:
++    if value is None or value == "":
++        return None
++    if not isinstance(value, str) or len(value) > 64:
++        return None
++    if (value in ("main", "custom", "unknown") or _SAFE_AGENT_RE.fullmatch(value)
++            or _AGENT_PSEUDONYM_RE.fullmatch(value)):
++        return value
++    return None
++
++
+ def _clean_tags(tags: dict[str, Any]) -> str | None:
+     if len(tags) > 20:
+         raise ValueError("tags must contain at most 20 keys")
+@@ -367,6 +386,7 @@ async def _prepare_event(body: EventIn, project_name: str, session: AsyncSession
+         request_tool_names_json=(
+             json.dumps(body.request_tool_names, separators=(",", ":")) if body.request_tool_names else None
+         ),
++        agent=_clean_agent(body.agent),
+     )
+ 
+ 
+diff --git a/routes/export.py b/routes/export.py
+index 425adee..5e2e46c 100644
+--- a/routes/export.py
++++ b/routes/export.py
+@@ -24,7 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
+ 
+ from database import get_session
+ from jev_scorer import EVALUATOR_PROJECT
+-from routes.events import JOB_REF_RE, PRODUCERS, RUNTIMES, WORK_TYPES
++from routes.events import JOB_REF_RE, PRODUCERS, RUNTIMES, WORK_TYPES, _clean_agent
+ from routes.jobs import _tag
+ from routes.tasks import _completion
+ 
+@@ -44,13 +44,14 @@ EXPORT_FIELDS = {
+         "producer", "job_ref", "job_ref_conflict", "work_type", "job_attempt", "occurred_at", "recorded_at",
+         "provider", "model", "pricing_model", "status", "error_type", "http_status", *_TOKENS, "reasoning_tokens",
+         "cost_status", "cost_usd", "estimated_cost_usd", "process_time_ms", "ttft_ms", "attempt", "retry_count",
+-        "tool_call_count", "role", "complexity", "complexity_method",
++        "tool_call_count", "role", "complexity", "complexity_method", "agent",
+     ),
+     "tasks": (
+         "task_ref", "project_name", "session_id", "runtimes", "runtime_inferred", "job_ref", "work_type",
+         "work_types", "hierarchy_status", "parent_task_ref", "root_task_ref", "first_event_at", "last_event_at",
+         "wall_time_ms", "completion", "completed_at", "llm_request_count", *_TOKENS, *_COST, "conflict_count",
+-        "updated_at",
++        "updated_at", "agent", "agent_conflict", "agent_unavailable_calls", "start_complexity",
++        "start_complexity_method",
+     ),
+     "jobs": (
+         "job_ref", "runtimes", "runtime_inferred", "work_type", "work_types", "attempts", "projects", "task_count",
+@@ -68,7 +69,7 @@ STATUSES = ("success", "error", "timeout", "cancelled")
+ COST_STATUSES = ("priced", "unpriced", "partial", "estimated", "legacy")
+ ROLES = ("primary", "subagent", "evaluator")
+ HIERARCHY = ("root", "child", "unknown")
+-COMPLEXITY_METHODS = ("request-shape-v1",)
++COMPLEXITY_METHODS = ("request-shape-v1", "cc-input-size-v1")
+ _ESTIMATED = ("partial", "estimated", "legacy")
+ 
+ 
+@@ -127,7 +128,7 @@ _EV = f"""ev AS (
+            e.model, e.pricing_model, e.status, e.error_type, e.http_status, e.prompt_tokens, e.completion_tokens,
+            e.cache_read_tokens, e.cache_creation_tokens, e.reasoning_tokens, e.cost_status, e.estimated_cost_usd,
+            e.process_time_ms, e.ttft_ms, e.attempt, e.retry_count, e.tool_call_count, e.role, e.complexity,
+-           e.complexity_method, e.ingest_seq,
++           e.complexity_method, e.agent, e.ingest_seq,
+            COALESCE(e.occurred_at, e.recorded_at) AS ts,
+            t.id AS task_ref,
+            {_tag('runtime')} AS runtime, {_tag('producer')} AS producer, {_tag('work_type')} AS work_type,
+@@ -152,7 +153,9 @@ _SUMS = f"""
+     group_concat(DISTINCT COALESCE(ev.runtime, '{LEGACY_RUNTIME}')) AS runtimes,
+     MAX(ev.runtime IS NULL) AS runtime_inferred,
+     group_concat(DISTINCT ev.work_type) AS work_types,
+-    SUM({_CONFLICT}) AS conflict_count"""
++    SUM({_CONFLICT}) AS conflict_count,
++    COUNT(DISTINCT ev.agent) AS agent_count, MIN(ev.agent) AS agent,
++    SUM(ev.agent IS NULL) AS agent_unavailable_calls"""
+ _PERIOD = "{ts} >= :start AND {ts} < :end"
+ 
+ _SQL = {
+@@ -161,13 +164,20 @@ SELECT ev.* FROM ev
+ WHERE {_PERIOD.format(ts='ev.ts')} AND ev.ingest_seq > :after
+ ORDER BY ev.ingest_seq LIMIT :n""",
+     # Start-time cohort: tasks whose first snapshot event is in the period; sums over all their snapshot events.
+-    "tasks": f"""WITH {_TJ}, {_EV}, ta AS (
++    "tasks": f"""WITH {_TJ}, {_EV}, sc AS (
++    SELECT task_ref, complexity AS start_complexity, complexity_method AS start_complexity_method FROM (
++        SELECT ev.*, ROW_NUMBER() OVER (PARTITION BY task_ref ORDER BY ts, id) AS rn FROM ev
++        WHERE task_ref IS NOT NULL AND complexity IS NOT NULL AND complexity_method IN {COMPLEXITY_METHODS}
++    ) WHERE rn = 1
++), ta AS (
+     SELECT ev.task_ref, {_SUMS}
+     FROM ev WHERE ev.task_ref IS NOT NULL GROUP BY ev.task_ref
+ )
+ SELECT ta.*, t.project_name, t.session_id, t.hierarchy_status, t.parent_task_ref, t.root_task_ref,
+-       t.completion, t.completed_at, t.last_seen_at, t.updated_at, tj.job AS job
++       t.completion, t.completed_at, t.last_seen_at, t.updated_at, tj.job AS job,
++       sc.start_complexity, sc.start_complexity_method
+ FROM ta JOIN tasks t ON t.id = ta.task_ref LEFT JOIN tj ON tj.task_ref = ta.task_ref
++LEFT JOIN sc ON sc.task_ref = ta.task_ref
+ WHERE {_PERIOD.format(ts='ta.first_event_at')} AND ta.task_ref > :after
+ ORDER BY ta.task_ref LIMIT :n""",
+     # Start-time cohort of jobs; an event's job is its task's snapshot job, else its own tag.
+@@ -253,6 +263,7 @@ def _event_item(row) -> dict[str, Any]:
+         "tool_call_count": row["tool_call_count"],
+         "role": _closed(row["role"], ROLES, "other") if row["role"] is not None else None,
+         "complexity": row["complexity"],
++        "agent": _clean_agent(row["agent"]),
+     })
+     if row["complexity_method"] in COMPLEXITY_METHODS:
+         item["complexity_method"] = row["complexity_method"]
+@@ -313,6 +324,12 @@ def _task_item(row, now: datetime) -> dict[str, Any]:
+         **_aggregate(row),
+         "conflict_count": int(row["conflict_count"] or 0),
+         "updated_at": row["updated_at"],
++        "agent": _clean_agent(row["agent"]) if int(row["agent_count"] or 0) == 1 else None,
++        "agent_conflict": int(row["agent_count"] or 0) >= 2,
++        "agent_unavailable_calls": int(row["agent_unavailable_calls"] or 0),
++        "start_complexity": row["start_complexity"],
++        "start_complexity_method": (row["start_complexity_method"]
++                                    if row["start_complexity_method"] in COMPLEXITY_METHODS else None),
+     })
+     return item
+ 
+diff --git a/routes/tasks.py b/routes/tasks.py
+index 677eadb..451f41a 100644
+--- a/routes/tasks.py
++++ b/routes/tasks.py
+@@ -86,7 +86,12 @@ async def _aggregates(session: AsyncSession, rows: list[dict]) -> dict[str, dict
+         "COALESCE(SUM(CASE WHEN event_type = 'llm_request' AND cost_status IN ('partial', 'estimated', 'legacy') "
+         "THEN estimated_cost_usd END), 0) AS estimated_cost, "
+         "SUM(event_type = 'llm_request' AND cost_status = 'unpriced') AS unpriced_count "
++        ", COUNT(DISTINCT CASE WHEN event_type = 'llm_request' THEN agent END) AS agent_count, "
++        "MIN(CASE WHEN event_type = 'llm_request' THEN agent END) AS agent, "
++        "SUM(event_type = 'llm_request' AND agent IS NULL) AS agent_unavailable_calls "
+         "FROM token_events WHERE event_type <> 'session' "
++        "AND NOT (project_name = 'token-inspector' AND COALESCE(role, '') = 'evaluator') "
++        "AND COALESCE(json_extract(tags_json, '$.attribution_invalid'), 0) = 0 "
+         f"AND (project_name, COALESCE(session_id, ''), turn_id) IN (VALUES {', '.join(placeholders)}) "
+         "GROUP BY project_name, s, turn_id"
+     )
+@@ -187,6 +192,9 @@ async def build_items(session: AsyncSession, rows: list[dict]) -> list[dict]:
+                 "unpriced_count": int(agg.get("unpriced_count") or 0),
+                 "start_complexity": row["start_complexity"],
+                 "start_complexity_method": row["start_complexity_method"],
++                "agent": agg.get("agent") if int(agg.get("agent_count") or 0) == 1 else None,
++                "agent_conflict": int(agg.get("agent_count") or 0) >= 2,
++                "agent_unavailable_calls": int(agg.get("agent_unavailable_calls") or 0),
+                 "prompt_state": state,
+                 "has_prompt": state == "retained",
+                 "prompt_purged": bool(row["prompt_purged_at"]),
+diff --git a/scripts/rollback_schema.py b/scripts/rollback_schema.py
+index 2fc5aeb..a15f8a4 100644
+--- a/scripts/rollback_schema.py
++++ b/scripts/rollback_schema.py
+@@ -19,11 +19,12 @@ from pathlib import Path
+ 
+ SCRIPTS = Path(__file__).resolve().parent
+ # source version -> (rollback script, resulting version)
+-STEPS = {12: ("rollback_v12.sql", 11), 11: ("rollback_v11.sql", 10)}
++STEPS = {13: ("rollback_v13.sql", 12), 12: ("rollback_v12.sql", 11), 11: ("rollback_v11.sql", 10)}
+ # resulting version -> application artifact to start afterwards
+ APP_FOR_VERSION = {
+     10: "a backend commit whose migrations.LATEST_SCHEMA_VERSION is 10 (e.g. 904dec2 or prod main before O9)",
+     11: "a backend commit whose migrations.LATEST_SCHEMA_VERSION is 11 (e.g. fdbb1e5, O9 phases 1-2)",
++    12: "a backend commit whose migrations.LATEST_SCHEMA_VERSION is 12 (O9 export)",
+ }
+ MIN_SQLITE = (3, 35, 0)
+ 
+diff --git a/scripts/rollback_v13.sql b/scripts/rollback_v13.sql
+new file mode 100644
+index 0000000..3643158
+--- /dev/null
++++ b/scripts/rollback_v13.sql
+@@ -0,0 +1,4 @@
++DROP INDEX IF EXISTS ix_token_events_call_time_agent;
++ALTER TABLE token_events DROP COLUMN agent;
++UPDATE export_state SET revision = revision + 1 WHERE id = 1;
++DELETE FROM schema_migrations WHERE version = 13;
+diff --git a/task_store.py b/task_store.py
+index 9be2f93..6456d3d 100644
+--- a/task_store.py
++++ b/task_store.py
+@@ -20,7 +20,7 @@ from sqlalchemy import text
+ 
+ from redaction import REDACTION_VERSION, scrub_text
+ 
+-APPROVED_METHODS = frozenset({"request-shape-v1"})
++APPROVED_METHODS = frozenset({"request-shape-v1", "cc-input-size-v1"})
+ # Eligibility marker set by the producer only on an authorized root prompt (O10 F1).
+ PROMPT_ELIGIBILITY = "v1-allowed"
+ SESSION_END_REASONS = ("end", "shutdown", "session_boundary", "new_session")
+@@ -70,8 +70,9 @@ def start_complexity_candidate(
+     """The one candidate rule for backfill and ingest; returns the method to store, or None."""
+     if event_type != "llm_request" or complexity is None:
+         return None
+-    if complexity_method_of(complexity_method, tags_json) in APPROVED_METHODS:
+-        return "request-shape-v1"
++    method = complexity_method_of(complexity_method, tags_json)
++    if method in APPROVED_METHODS:
++        return method
+     return None
+ 
+ 
+diff --git a/tests/cc_support.py b/tests/cc_support.py
+index 1971c96..870005f 100644
+--- a/tests/cc_support.py
++++ b/tests/cc_support.py
+@@ -51,7 +51,8 @@ def canaries() -> list[bytes]:
+ 
+ def modules():
+     """Fresh producer modules with default constants (tests monkeypatch them)."""
+-    names = ["cc_config", "cc_attribution", "cc_transcript", "cc_events", "cc_state", "cc_client", "cc_hook"]
++    names = ["cc_agent", "cc_complexity", "cc_config", "cc_attribution", "cc_transcript", "cc_events", "cc_state",
++             "cc_client", "cc_hook"]
+     return {name: importlib.reload(importlib.import_module(name)) for name in names}
+ 
+ 
+@@ -195,7 +196,7 @@ def set_home(monkeypatch, home: Path) -> None:
+     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+     for name in ("TOKEN_INSPECTOR_URL", "TOKEN_INSPECTOR_API_KEY", "TOKEN_INSPECTOR_PROJECT_ALIASES",
+                  "TOKEN_INSPECTOR_JOB_REF", "TOKEN_INSPECTOR_WORK_TYPE", "TOKEN_INSPECTOR_JOB_ATTEMPT",
+-                 "TI_CC_TEST_MODE"):
++                 "TOKEN_INSPECTOR_AGENT_NAME_MODE", "TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", "TI_CC_TEST_MODE"):
+         monkeypatch.delenv(name, raising=False)
+ 
+ 
+diff --git a/tests/test_agent_ingest.py b/tests/test_agent_ingest.py
+new file mode 100644
+index 0000000..7b9ff75
+--- /dev/null
++++ b/tests/test_agent_ingest.py
+@@ -0,0 +1,30 @@
++from sqlalchemy import text
++
++from database import AsyncSessionLocal
++from routes.events import _clean_agent
++
++
++def test_clean_agent_accepts_supported_shapes():
++    for value in ("main", "custom", "unknown", "fork", "plugin:agent", "a-0123456789abcdef"):
++        assert _clean_agent(value) == value
++
++
++def test_clean_agent_is_fail_open_and_never_echoes_invalid_value():
++    secret = "https://secret.example/path"
++    for value in (secret, "", None, 7, "x" * 65, "a-0123456789abcde."):
++        assert _clean_agent(value) is None
++
++
++async def test_agent_shapes_store_and_invalid_is_accepted(client):
++    values = ["main", "custom", "unknown", "fork", "plugin:agent", "a-0123456789abcdef",
++              "bad.value", "x" * 65, 7]
++    for index, value in enumerate(values):
++        response = await client.post("/api/events", headers={"X-Project-Name": "proj"}, json={
++            "client_event_id": f"agent-{index}", "model": "m", "agent": value,
++        })
++        assert response.status_code == 201, response.text
++    async with AsyncSessionLocal() as session:
++        rows = (await session.execute(text(
++            "SELECT agent FROM token_events ORDER BY client_event_id"
++        ))).scalars().all()
++    assert rows == ["main", "custom", "unknown", "fork", "plugin:agent", "a-0123456789abcdef", None, None, None]
+diff --git a/tests/test_agents_analytics.py b/tests/test_agents_analytics.py
+new file mode 100644
+index 0000000..1716c0b
+--- /dev/null
++++ b/tests/test_agents_analytics.py
+@@ -0,0 +1,69 @@
++from __future__ import annotations
++
++from routes import analytics
++
++START, END = "2026-09-01T00:00:00Z", "2026-10-01T00:00:00Z"
++CC = {"runtime": "claude-code@hermes", "producer": "claude-code-hook"}
++
++
++def event(cid, *, agent=None, complexity=None, method=None, model="zz-agent-unpriced", role="subagent", tags=None,
++          session="s", turn="t", project=None):
++    body = {"client_event_id": cid, "occurred_at": "2026-09-10T00:00:00Z", "model": model,
++            "session_id": session, "turn_id": turn, "role": role, "tags": CC if tags is None else tags,
++            "prompt_tokens": 10, "completion_tokens": 2}
++    if agent is not None:
++        body["agent"] = agent
++    if complexity is not None:
++        body.update(complexity=complexity, complexity_method=method)
++    return body
++
++
++async def post(client, body, project="proj"):
++    response = await client.post("/api/events", json=body, headers={"X-Project-Name": project})
++    assert response.status_code in (200, 201), response.text
++
++
++async def test_agents_grouping_coverage_cost_and_global_tasks(client):
++    await post(client, event("a", agent="main", complexity=1, method="cc-input-size-v1"))
++    await post(client, event("b", agent="unknown", complexity=2, method="cc-input-size-v1"))
++    await post(client, event("c", session="", turn="", agent=None))
++    await post(client, event("eval", agent="main", role="evaluator"), project="token-inspector")
++    await post(client, event("bad-attribution", agent="main", tags={"runtime": "bad", "producer": "claude-code-hook"}))
++
++    response = await client.get("/api/analytics/agents", params={"from": START, "to": END})
++    assert response.status_code == 200, response.text
++    body = response.json()
++    assert body["contract_version"] == 1 and body["complete"] is True
++    assert body["totals"]["calls"] == 3 and body["totals"]["tasks"] == 1
++    assert sum(cell["tasks"] for cell in body["cells"]) == 2
++    assert body["coverage"] == {"agent_unavailable_calls": 1, "agent_unknown_calls": 1,
++                                "agent_custom_calls": 0, "complexity_unscored_calls": 1}
++    assert body["totals"]["priced_cost_usd"] is None
++    assert body["totals"]["unpriced_calls"] == body["totals"]["calls"]
++    assert body["totals"]["avg_process_time_ms"] is None
++    assert any(cell["agent"] is None and cell["complexity"] is None for cell in body["cells"])
++
++
++async def test_agents_cell_bound_is_static_413(client, monkeypatch):
++    monkeypatch.setattr(analytics, "AGENT_CELL_MAX", 1)
++    await post(client, event("a", agent="main", complexity=1, method="cc-input-size-v1"))
++    await post(client, event("b", agent="unknown", complexity=2, method="cc-input-size-v1"))
++    response = await client.get("/api/analytics/agents", params={"from": START, "to": END})
++    assert response.status_code == 413 and response.json() == {"detail": "result_too_large"}
++
++
++async def test_task_agent_is_derived_from_its_counted_calls(client):
++    first = event("task-agent-1", agent="main")
++    second = event("task-agent-2")
++    second["occurred_at"] = "2026-09-03T00:00:00Z"
++    response = await client.post("/api/events/batch", json={"events": [first, second]},
++                                 headers={"X-Project-Name": "proj"})
++    assert response.status_code == 200, response.text
++    item = (await client.get("/api/tasks?days=3650")).json()["items"][0]
++    assert (item["agent"], item["agent_conflict"], item["agent_unavailable_calls"]) == ("main", False, 1)
++
++    conflict = event("task-agent-3", agent="fork")
++    conflict["occurred_at"] = "2026-09-04T00:00:00Z"
++    assert (await client.post("/api/events", json=conflict, headers={"X-Project-Name": "proj"})).status_code == 201
++    item = (await client.get("/api/tasks?days=3650")).json()["items"][0]
++    assert (item["agent"], item["agent_conflict"], item["agent_unavailable_calls"]) == (None, True, 1)
+diff --git a/tests/test_cc_agent.py b/tests/test_cc_agent.py
+new file mode 100644
+index 0000000..c46436b
+--- /dev/null
++++ b/tests/test_cc_agent.py
+@@ -0,0 +1,65 @@
++from __future__ import annotations
++
++import json
++
++import pytest
++
++from cc_support import modules, set_home
++
++
++@pytest.fixture
++def agent(tmp_path, monkeypatch):
++    set_home(monkeypatch, tmp_path / "home")
++    return modules()["cc_agent"]
++
++
++@pytest.mark.parametrize(("value", "mode", "allowlist", "expected"), [
++    ("general-purpose", "deny", (), "general-purpose"),
++    ("fork", "deny", (), "fork"),
++    ("my-agent", "allowlist", ("my-agent",), "my-agent"),
++])
++def test_sanitize_verified_values(agent, value, mode, allowlist, expected):
++    assert agent.sanitize(value, mode=mode, allowlist=allowlist, local_names=()) == expected
++
++
++def test_sanitize_default_deny_and_reserved_collision(agent):
++    custom = agent.sanitize("my-agent", mode="deny", allowlist=("my-agent",), local_names=())
++    reserved = agent.sanitize("main", mode="allowlist", allowlist=("main",), local_names=())
++    assert custom == agent.pseudonym("my-agent")
++    assert reserved == agent.pseudonym("main")
++    assert custom.startswith("a-") and custom == agent.pseudonym("my-agent")
++
++
++def test_sanitize_rejects_bad_values_and_local_names(agent):
++    assert agent.sanitize(None, mode="deny", allowlist=(), local_names=()) == "unknown"
++    assert agent.sanitize("x" * 65, mode="deny", allowlist=(), local_names=()) == "unknown"
++    assert agent.sanitize("host", mode="allowlist", allowlist=("host",), local_names=("HOST",)) == agent.pseudonym("host")
++    assert agent.sanitize("unsafe.name", mode="allowlist", allowlist=("unsafe.name",), local_names=()) == agent.pseudonym("unsafe.name")
++
++
++def test_sidecar_agent_type_is_bounded(agent, tmp_path):
++    transcript = tmp_path / "subagents" / "agent-id.jsonl"
++    transcript.parent.mkdir()
++    transcript.write_text("", encoding="utf-8")
++    sidecar = transcript.with_suffix(".meta.json")
++    sidecar.write_text(json.dumps({"agentType": "fork", "description": "secret"}), encoding="utf-8")
++    assert agent.read_sidecar_agent_type(str(transcript)) == "fork"
++    sidecar.write_text("not-json", encoding="utf-8")
++    assert agent.read_sidecar_agent_type(str(transcript)) is None
++    sidecar.write_bytes(b"{" + b" " * (64 * 1024) + b"}")
++    assert agent.read_sidecar_agent_type(str(transcript)) is None
++    assert agent.read_sidecar_agent_type(str(transcript.with_name("agent-missing.jsonl"))) is None
++
++
++def test_agent_config_env_overrides_file(tmp_path, monkeypatch):
++    set_home(monkeypatch, tmp_path / "home")
++    cfg_file = tmp_path / "home" / ".config" / "token-inspector" / "claude-code.json"
++    cfg_file.parent.mkdir(parents=True)
++    cfg_file.write_text(json.dumps({"agent_name_mode": "allowlist", "agent_name_allowlist": ["file", 7]}))
++    cc = modules()
++    cfg = cc["cc_config"].load()
++    assert (cfg.agent_name_mode, cfg.agent_name_allowlist) == ("allowlist", ("file",))
++    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_MODE", "invalid")
++    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", '["env", 8]')
++    cfg = cc["cc_config"].load()
++    assert (cfg.agent_name_mode, cfg.agent_name_allowlist) == ("deny", ("env",))
+diff --git a/tests/test_cc_complexity.py b/tests/test_cc_complexity.py
+new file mode 100644
+index 0000000..f9acba0
+--- /dev/null
++++ b/tests/test_cc_complexity.py
+@@ -0,0 +1,27 @@
++from __future__ import annotations
++
++import pytest
++
++from cc_support import modules
++
++
++@pytest.fixture
++def complexity():
++    return modules()["cc_complexity"]
++
++
++@pytest.mark.parametrize(("total", "tier"), [
++    (0, 1), (3999, 1), (4000, 2), (4001, 2), (15999, 2), (16000, 3), (16001, 3),
++    (63999, 3), (64000, 4), (64001, 4), (127999, 4), (128000, 5), (128001, 5),
++])
++def test_input_size_boundaries(complexity, total, tier):
++    assert complexity.input_size_tier(total, 0, 0) == tier
++
++
++def test_cache_is_included(complexity):
++    assert complexity.input_size_tier(1, 3999, 12000) == 3
++
++
++@pytest.mark.parametrize("values", [(None, 0, 0), (-1, 0, 0), (True, 0, 0), (0, "0", 0), (0, 0, 1.0)])
++def test_malformed_usage_is_unscored(complexity, values):
++    assert complexity.input_size_tier(*values) is None
+diff --git a/tests/test_cc_events.py b/tests/test_cc_events.py
+index a8f25b3..fbc899d 100644
+--- a/tests/test_cc_events.py
++++ b/tests/test_cc_events.py
+@@ -16,9 +16,9 @@ def cc(tmp_path, monkeypatch):
+     return modules()
+ 
+ 
+-def build(cc, record, *, subagent=False, job=None, project="proj"):
++def build(cc, record, *, subagent=False, job=None, project="proj", agent=None):
+     return cc["cc_events"].build_event(record, runtime="claude-code@windows", project=project,
+-                                       project_source="git_remote", job=job or {}, subagent=subagent)
++                                       project_source="git_remote", job=job or {}, subagent=subagent, agent=agent)
+ 
+ 
+ def one_record(cc, tmp_path, **call):
+@@ -43,6 +43,19 @@ def test_token_mapping_missing_cache_fields(cc, tmp_path):
+     t.flush()
+     ev = build(cc, cc["cc_transcript"].read_window(str(t.path), 0, None).records[0])
+     assert (ev["cache_read_tokens"], ev["cache_creation_tokens"]) == (0, 0)
++    assert "complexity" not in ev and "complexity_method" not in ev
++
++
++def test_agent_and_complexity_are_allowlisted(cc, tmp_path):
++    record = one_record(cc, tmp_path, input_tokens=100, cache_read=4000, cache_create=0)
++    main = build(cc, record, agent="main")
++    child = build(cc, record, agent="a-0123456789abcdef")
++    absent = build(cc, record, agent=None)
++    assert main["agent"] == "main" and child["agent"] == "a-0123456789abcdef"
++    assert "agent" not in absent
++    assert main["complexity"] == 2 and main["complexity_method"] == "cc-input-size-v1"
++    record.raw_agent_id = "raw-secret"
++    assert "raw_agent_id" not in build(cc, record, agent="unknown")
+ 
+ 
+ def test_client_event_id_from_message_and_request(cc, tmp_path):
+diff --git a/tests/test_cc_hook.py b/tests/test_cc_hook.py
+index 8bab185..ef76426 100644
+--- a/tests/test_cc_hook.py
++++ b/tests/test_cc_hook.py
+@@ -15,7 +15,7 @@ from pathlib import Path
+ 
+ import pytest
+ 
+-from cc_support import (CANARY_HOST, CANARY_PATH_POSIX, CANARY_PATH_WIN, HOOK, PRODUCER_DIR, FakeServer, Transcript, canaries,
++from cc_support import (CANARY_AGENT, CANARY_HOST, CANARY_PATH_POSIX, CANARY_PATH_WIN, HOOK, PRODUCER_DIR, FakeServer, Transcript, canaries,
+                         make_repo, modules, run_hook_subprocess, set_home, stdin_bytes, subagent_path)
+ 
+ 
+@@ -154,7 +154,58 @@ def test_payload_sentinel_bytes(cc, server, tmp_path):
+         assert set(event) <= ce.ALLOWED_FIELDS and set(event["tags"]) <= ce.TAG_KEYS
+         assert "request_tool_names" not in event and "tool_call_count" in event
+     root = next(e for e in server.events() if e["task_hierarchy"] == "root")
++    child = next(e for e in server.events() if e["task_hierarchy"] == "child")
+     assert root["tool_call_count"] == 2
++    assert root["agent"] == "main"
++    assert child["agent"] == cc["cc_agent"].pseudonym("zz-canary-agent")
++
++
++def test_drain_resolves_sidecar_or_unknown_per_subagent(cc, server, tmp_path):
++    main = session(tmp_path, "44444444-4444-4444-4444-444444444444")
++    parent = main.prompt()
++    main.call("root-m", "root-r")
++    main.flush()
++    sidecar_sub = Transcript(subagent_path(main.path, "side"), main.session_id, agent_id="side")
++    sidecar_sub.prompt(parent)
++    sidecar_sub.call("side-m", "side-r")
++    sidecar_sub.flush()
++    sidecar_sub.path.with_suffix(".meta.json").write_text(json.dumps({"agentType": "fork"}), encoding="utf-8")
++    unknown_sub = Transcript(subagent_path(main.path, "none"), main.session_id, agent_id="none")
++    unknown_sub.prompt(parent)
++    unknown_sub.call("none-m", "none-r")
++    unknown_sub.flush()
++
++    run(cc, "Stop", main.path, str(tmp_path))
++    events = {event["client_event_id"]: event for event in server.events()}
++    assert next(event for event in events.values() if event["task_hierarchy"] == "root")["agent"] == "main"
++    assert events[cc["cc_events"].client_event_id("side-m", "side-r")]["agent"] == "fork"
++    assert events[cc["cc_events"].client_event_id("none-m", "none-r")]["agent"] == "unknown"
++
++
++def test_subagent_truncation_clears_old_agent_binding(cc, server, tmp_path):
++    main = session(tmp_path, "55555555-5555-5555-5555-555555555555")
++    parent = main.prompt()
++    main.call("main-old", "main-old-r")
++    main.flush()
++    path = subagent_path(main.path, "reset")
++    sub = Transcript(path, main.session_id, agent_id="reset")
++    sub.prompt(parent)
++    for index in range(5):
++        sub.call(f"old-{index}", f"old-r-{index}")
++    sub.flush()
++    run(cc, "SubagentStop", main.path, str(tmp_path), agent_transcript=path)
++    assert state(cc, path)["ctx"]["agent"] == cc["cc_agent"].pseudonym(CANARY_AGENT)
++
++    path.write_bytes(b"")
++    replacement = Transcript(path, main.session_id, agent_id="reset")
++    replacement.prompt(parent)
++    replacement.call("new-after-reset", "new-after-reset-r")
++    replacement.flush()
++    path.with_suffix(".meta.json").write_text(json.dumps({"agentType": "fork"}), encoding="utf-8")
++    run(cc, "Stop", main.path, str(tmp_path))
++    event_id = cc["cc_events"].client_event_id("new-after-reset", "new-after-reset-r")
++    assert next(event for event in server.events() if event["client_event_id"] == event_id)["agent"] == "fork"
++    assert state(cc, path)["ctx"]["agent"] == "fork"
+ 
+ 
+ def test_payload_value_canaries(cc, server, tmp_path, monkeypatch):
+diff --git a/tests/test_cc_privacy.py b/tests/test_cc_privacy.py
+new file mode 100644
+index 0000000..9285026
+--- /dev/null
++++ b/tests/test_cc_privacy.py
+@@ -0,0 +1,39 @@
++from __future__ import annotations
++
++import io
++import json
++
++import pytest
++
++from cc_support import FakeServer, Transcript, modules, set_home, stdin_bytes, subagent_path
++
++
++@pytest.mark.parametrize("raw", [
++    "/home/private/work", "https://secret.example/path", "person@example.com", "host.internal", "hostname",
++])
++def test_raw_agent_canaries_never_leave_or_persist(tmp_path, monkeypatch, raw):
++    set_home(monkeypatch, tmp_path / "home")
++    cc = modules()
++    monkeypatch.setattr(cc["cc_hook"], "HOOK_BOUND_S", 60.0)
++    server = FakeServer()
++    monkeypatch.setenv("TOKEN_INSPECTOR_URL", server.url)
++    try:
++        main = Transcript(tmp_path / "session.jsonl", "session")
++        parent = main.prompt()
++        main.call("main-m", "main-r")
++        main.flush()
++        sub = Transcript(subagent_path(main.path, "run"), "session", agent_id="run")
++        sub.prompt(parent)
++        sub.call("sub-m", "sub-r")
++        sub.flush()
++        data = json.loads(stdin_bytes("SubagentStop", main.path, str(tmp_path), agent_transcript=sub.path))
++        data["agent_type"] = raw
++        assert cc["cc_hook"].main(io.BytesIO(json.dumps(data).encode())) == 0
++        replacement = cc["cc_agent"].pseudonym(raw).encode()
++        assert replacement in b"".join(server.bodies)
++        state_payloads = [p.read_bytes() for p in cc["cc_config"].state_dir().glob("*.json")]
++        assert replacement in b"".join(state_payloads)
++        for payload in [*server.bodies, *state_payloads]:
++            assert raw.encode() not in payload
++    finally:
++        server.close()
+diff --git a/tests/test_cc_state_client.py b/tests/test_cc_state_client.py
+index 467ae88..65ba4c8 100644
+--- a/tests/test_cc_state_client.py
++++ b/tests/test_cc_state_client.py
+@@ -57,6 +57,24 @@ def transcript(tmp_path, name="sess", calls=2) -> Transcript:
+ # --- state -------------------------------------------------------------------------------------------------
+ 
+ 
++def test_agent_context_round_trip_and_malformed_block_drop(cc, tmp_path):
++    st = cc["cc_state"]
++    directory = tmp_path / "state"
++    directory.mkdir()
++    key = "1" * 32
++    base = {"project": "proj", "project_source": "fallback", "job": {}}
++    agent = {"agent": "main", "agent_source": "main", "agent_run_key": "2" * 32,
++             "agent_policy_version": 1}
++    assert st.save(directory, key, offset=1, turn=None, file_id=[1, 2], pending=False,
++                   ctx={**base, **agent})
++    assert st.load(directory, key)["ctx"] == {**base, **agent}
++    assert st.save(directory, key, offset=2, turn=None, file_id=[1, 2], pending=False,
++                   ctx={**base, **agent, "agent_run_key": "raw-id"})
++    assert st.load(directory, key)["ctx"] == base
++    assert st.save(directory, key, offset=3, turn=None, file_id=[1, 2], pending=False, ctx=base)
++    assert st.load(directory, key)["ctx"] == base
++
++
+ def test_state_holds_only_offsets_and_ids(cc, tmp_path, monkeypatch):
+     srv = FakeServer()
+     monkeypatch.setenv("TOKEN_INSPECTOR_URL", srv.url)
+@@ -71,7 +89,8 @@ def test_state_holds_only_offsets_and_ids(cc, tmp_path, monkeypatch):
+     assert len(states) == 1 and re.fullmatch(r"[0-9a-f]{32}\.json", states[0].name)
+     data = json.loads(states[0].read_bytes())
+     assert set(data) <= {"offset", "turn_uuid", "file_id", "pending", "updated_at", "ctx"}
+-    assert set(data["ctx"]) == {"project", "project_source", "job"}
++    assert set(data["ctx"]) == {"project", "project_source", "job", "agent", "agent_source",
++                                "agent_run_key", "agent_policy_version"}
+     for path in files:
+         raw = path.read_bytes()
+         assert TOKEN.encode() not in raw and b"proj" not in raw.replace(b'"project', b"")
+diff --git a/tests/test_cc_stdlib.py b/tests/test_cc_stdlib.py
+index 03cdcaa..c029caa 100644
+--- a/tests/test_cc_stdlib.py
++++ b/tests/test_cc_stdlib.py
+@@ -13,7 +13,7 @@ def test_cc_producer_is_stdlib_only():
+     files = sorted(PRODUCER_DIR.glob("*.py"))
+     siblings = {p.stem for p in files}
+     assert {"cc_hook", "cc_config", "cc_transcript", "cc_events", "cc_attribution", "cc_state", "cc_client",
+-            "install"} <= siblings
++            "cc_agent", "cc_complexity", "install"} <= siblings
+     bad = []
+     for path in files:
+         tree = ast.parse(path.read_text(encoding="utf-8"))
+diff --git a/tests/test_export_contract.py b/tests/test_export_contract.py
+index 7e46c49..ab75af2 100644
+--- a/tests/test_export_contract.py
++++ b/tests/test_export_contract.py
+@@ -30,13 +30,14 @@ FIELDS = {
+         "provider", "model", "pricing_model", "status", "error_type", "http_status", "prompt_tokens",
+         "completion_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "cost_status",
+         "cost_usd", "estimated_cost_usd", "process_time_ms", "ttft_ms", "attempt", "retry_count", "tool_call_count",
+-        "role", "complexity", "complexity_method"],
++        "role", "complexity", "complexity_method", "agent"],
+     "tasks": [
+         "task_ref", "project_name", "session_id", "runtimes", "runtime_inferred", "job_ref", "work_type",
+         "work_types", "hierarchy_status", "parent_task_ref", "root_task_ref", "first_event_at", "last_event_at",
+         "wall_time_ms", "completion", "completed_at", "llm_request_count", "prompt_tokens", "completion_tokens",
+         "cache_read_tokens", "cache_creation_tokens", "priced_count", "unpriced_count", "cost_usd",
+-        "estimated_cost_usd", "cost_complete", "conflict_count", "updated_at"],
++        "estimated_cost_usd", "cost_complete", "conflict_count", "updated_at", "agent", "agent_conflict",
++        "agent_unavailable_calls", "start_complexity", "start_complexity_method"],
+     "jobs": [
+         "job_ref", "runtimes", "runtime_inferred", "work_type", "work_types", "attempts", "projects", "task_count",
+         "llm_request_count", "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_creation_tokens",
+diff --git a/tests/test_export_pagination.py b/tests/test_export_pagination.py
+index d7d3702..ea80f7b 100644
+--- a/tests/test_export_pagination.py
++++ b/tests/test_export_pagination.py
+@@ -44,7 +44,8 @@ async def test_pages_concatenate_to_full_result(client):
+ 
+ 
+ async def test_pagination_under_concurrent_ingest(client):
+-    await post(client, *(ev(f"a{i}", turn=f"t{i}", at=_at(i)) for i in range(5)))
++    await post(client, *(ev(f"a{i}", turn=f"t{i}", at=_at(i), agent="main", complexity=1,
++                            complexity_method="cc-input-size-v1") for i in range(5)))
+     page1 = await export(client, "events", limit=2)
+     tasks1 = await export(client, "tasks", limit=2)
+     page1_refs = {task["task_ref"] for task in tasks1["items"]}
+@@ -53,7 +54,8 @@ async def test_pagination_under_concurrent_ingest(client):
+     await post(client,
+                ev("new-in-period", turn="n1", at="2026-09-20T00:00:00Z"),        # (a) new event in the period
+                ev("late-old-time", turn="n2", at="2026-09-01T00:00:01Z"),        # (b) late event, old occurred_at
+-               ev("same-task", turn=target_turn, at="2026-09-02T00:00:00Z", prompt_tokens=1000))  # (c) later page
++               ev("same-task", turn=target_turn, at="2026-09-02T00:00:00Z", prompt_tokens=1000,
++                  agent="unknown", complexity=2, complexity_method="cc-input-size-v1"))  # (c) later page
+     rest = await walk_from(client, "events", page1)
+     ids = [i["client_event_id"] for i in page1["items"] + rest]
+     assert sorted(ids) == sorted(f"a{i}" for i in range(5))
+@@ -61,6 +63,8 @@ async def test_pagination_under_concurrent_ingest(client):
+     assert sum(t["prompt_tokens"] for t in tasks1["items"] + task_rest) == 50  # sums unchanged within the chain
+     target = next(task for task in task_rest if task["task_ref"] == target_ref)
+     assert (target["llm_request_count"], target["prompt_tokens"], target["completion_tokens"]) == (1, 10, 5)
++    assert (target["agent"], target["agent_conflict"], target["agent_unavailable_calls"]) == ("main", False, 0)
++    assert (target["start_complexity"], target["start_complexity_method"]) == (1, "cc-input-size-v1")
+     fresh, _ = await walk(client, "events")
+     assert {"new-in-period", "late-old-time", "same-task"} <= {i["client_event_id"] for i in fresh}
+ 
+diff --git a/tests/test_migration_v11.py b/tests/test_migration_v11.py
+index 178805b..f04a2bd 100644
+--- a/tests/test_migration_v11.py
++++ b/tests/test_migration_v11.py
+@@ -128,11 +128,11 @@ async def test_rollback_runner_refuses_unknown_source_and_old_sqlite(tmp_path, m
+     path = tmp_path / "v11.db"
+     await database.init_db(str(path))
+     with closing(sqlite3.connect(path)) as conn:
+-        conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (13, 'x')")
++        conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (14, 'x')")
+         conn.commit()
+     columns = _columns(path, "tasks")
+-    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1  # no step from 13: refused
+-    assert _columns(path, "tasks") == columns and _version(path) == 13
++    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1  # no step from 14: refused
++    assert _columns(path, "tasks") == columns and _version(path) == 14
+     monkeypatch.setattr(rollback_schema.sqlite3, "sqlite_version_info", (3, 34, 1))
+     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1
+ 
+diff --git a/tests/test_migration_v12.py b/tests/test_migration_v12.py
+index 34c038a..0866553 100644
+--- a/tests/test_migration_v12.py
++++ b/tests/test_migration_v12.py
+@@ -76,7 +76,7 @@ async def test_m12_fresh_equals_migrated(tmp_path):
+     await database.init_db(str(fresh))
+     migrated = await _v11_db(tmp_path, UNORDERED)
+     await database.init_db(str(migrated))
+-    assert _version(fresh) == _version(migrated) == 12 == migrations.LATEST_SCHEMA_VERSION
++    assert _version(fresh) == _version(migrated) == 13 == migrations.LATEST_SCHEMA_VERSION
+     for table in ("tasks", "token_events", "export_state"):
+         assert _columns(fresh, table) == _columns(migrated, table), table
+         assert _indexes(fresh, table) == _indexes(migrated, table), table
+@@ -84,7 +84,7 @@ async def test_m12_fresh_equals_migrated(tmp_path):
+         query = "SELECT sql FROM sqlite_master WHERE name IN ('ux_token_events_ingest_seq', 'export_state') ORDER BY name"
+         assert f.execute(query).fetchall() == m.execute(query).fetchall()
+     last_seq, revision, epoch = _state(fresh)
+-    assert (last_seq, revision) == (0, 0) and re.fullmatch(r"[0-9a-f]{32}", epoch)
++    assert (last_seq, revision) == (0, 1) and re.fullmatch(r"[0-9a-f]{32}", epoch)
+     assert _state(migrated)[2] != epoch  # a random epoch per created row
+ 
+ 
+@@ -93,7 +93,7 @@ async def test_m12_backfill_order(tmp_path):
+     path = await _v11_db(tmp_path, UNORDERED)
+     await database.init_db(str(path))
+     assert _seqs(path) == {"e-early": 1, "e-b": 2, "e-c": 3, "e-late": 4}
+-    assert _state(path)[:2] == (4, 0)
++    assert _state(path)[:2] == (4, 1)
+     (backup,) = [p for p in tmp_path.glob("v11.db.bak-v11-*") if not p.name.endswith(("-wal", "-shm", "-journal"))]
+     migrations.verify_backup(path, backup, 11)
+     with closing(sqlite3.connect(path)) as conn:  # the partial unique index enforces distinct sequences
+@@ -116,9 +116,9 @@ async def test_null_seq_self_heal_on_startup(tmp_path):
+     epoch = _state(path)[2]
+     await database.init_db(str(path))
+     assert _seqs(path) == {"a": 1, "old-1": 2, "old-2": 3}
+-    assert _state(path) == (3, 0, epoch)
++    assert _state(path) == (3, 1, epoch)
+     await database.init_db(str(path))  # a second restart changes nothing
+-    assert _seqs(path) == {"a": 1, "old-1": 2, "old-2": 3} and _state(path) == (3, 0, epoch)
++    assert _seqs(path) == {"a": 1, "old-1": 2, "old-2": 3} and _state(path) == (3, 1, epoch)
+ 
+ 
+ async def test_heal_is_atomic(tmp_path, monkeypatch):
+@@ -163,19 +163,20 @@ async def test_rollback_runner_guards(tmp_path, monkeypatch, capsys):
+     monkeypatch.setattr(rollback_schema, "_version", moving)
+     assert rollback_schema.main(["--db", str(path), "--to", "11"]) == 1
+     monkeypatch.setattr(rollback_schema, "_version", real)
+-    assert _version(path) == 12 and "ingest_seq" in [c[1] for c in _columns(path, "token_events")]
++    assert _version(path) == 13 and "ingest_seq" in [c[1] for c in _columns(path, "token_events")]
+ 
+     # SQLite < 3.35 is refused before any write
+     monkeypatch.setattr(rollback_schema.sqlite3, "sqlite_version_info", (3, 34, 1))
+     assert rollback_schema.main(["--db", str(path), "--to", "11"]) == 1
+     monkeypatch.undo()
+-    assert _version(path) == 12
++    assert _version(path) == 13
+     capsys.readouterr()
+ 
+-    # --to 10 from v12 runs v12 -> 11, then 11 -> 10, in that order
++    # --to 10 from current runs each registered step in order
+     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 0
+     out = capsys.readouterr().out
+-    assert out.index("12 -> 11") < out.index("11 -> 10") and "LATEST_SCHEMA_VERSION is 10" in out
++    assert out.index("13 -> 12") < out.index("12 -> 11") < out.index("11 -> 10")
++    assert "LATEST_SCHEMA_VERSION is 10" in out
+     assert _version(path) == 10
+     assert "ingest_seq" not in [c[1] for c in _columns(path, "token_events")] and not _columns(path, "export_state")
+ 
+@@ -193,8 +194,8 @@ async def test_rollback_to_v11_and_reupgrade(tmp_path, capsys):
+     with closing(sqlite3.connect(path)) as conn:  # v11 code inserts on the rolled-back DB
+         _insert_old_shape(conn, "v11-row", "2026-09-01T00:00:00Z")
+         conn.commit()
+-    await database.init_db(str(path))  # re-upgrade: v12 again, a new epoch, the v11 row numbered
+-    assert _version(path) == 12 and _seqs(path) == {"v11-row": 1}
++    await database.init_db(str(path))  # re-upgrade: current schema, a new epoch, the v11 row numbered
++    assert _version(path) == 13 and _seqs(path) == {"v11-row": 1}
+     assert _state(path)[2] != old_epoch
+ 
+ 
+diff --git a/tests/test_migration_v13.py b/tests/test_migration_v13.py
+new file mode 100644
+index 0000000..137b53b
+--- /dev/null
++++ b/tests/test_migration_v13.py
+@@ -0,0 +1,41 @@
++from __future__ import annotations
++
++import sqlite3
++from contextlib import closing
++
++import pytest
++
++import database
++import migrations
++from scripts import rollback_schema
++
++
++pytestmark = pytest.mark.skipif(sqlite3.sqlite_version_info < (3, 35, 0), reason="DROP COLUMN needs SQLite 3.35+")
++
++
++def schema(path):
++    with closing(sqlite3.connect(path)) as conn:
++        columns = [row[1] for row in conn.execute("PRAGMA table_info(token_events)")]
++        indexes = [row[1] for row in conn.execute("PRAGMA index_list(token_events)")]
++        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
++        revision = conn.execute("SELECT revision FROM export_state WHERE id = 1").fetchone()[0]
++    return columns, indexes, version, revision
++
++
++async def test_migration_v13_and_rollback_round_trip(tmp_path):
++    path = tmp_path / "v13.db"
++    await database.init_db(str(path))
++    columns, indexes, version, revision = schema(path)
++    assert version == migrations.LATEST_SCHEMA_VERSION == 13
++    assert "agent" in columns and "ix_token_events_call_time_agent" in indexes
++    assert revision == 1
++
++    assert rollback_schema.main(["--db", str(path), "--to", "12"]) == 0
++    columns, indexes, version, revision = schema(path)
++    assert version == 12 and "agent" not in columns and "ix_token_events_call_time_agent" not in indexes
++    assert revision == 2
++
++    await database.init_db(str(path))
++    columns, indexes, version, revision = schema(path)
++    assert version == 13 and "agent" in columns and "ix_token_events_call_time_agent" in indexes
++    assert revision == 3
+diff --git a/tests/test_prompt_allowlist.py b/tests/test_prompt_allowlist.py
+index 5a08841..8ef5a04 100644
+--- a/tests/test_prompt_allowlist.py
++++ b/tests/test_prompt_allowlist.py
+@@ -741,7 +741,7 @@ async def test_allowlist_config_boundary(monkeypatch, caplog):
+     for name in ("zz-alpha-proj", "zz-beta-proj"):
+         assert name not in meta.text
+     assert not any(v == 2 or v == 3 for v in meta.json().values() if isinstance(v, int) and not isinstance(v, bool)
+-                   ) and meta.json()["schema_version"] == 12
++                   ) and meta.json()["schema_version"] == 13
+     # driver DEBUG records echo SQL parameters (the project name of a normal event, which is permitted)
+     app_log = "\n".join(r.getMessage() for r in caplog.records if not r.name.startswith(("aiosqlite", "sqlalchemy")))
+     warnings = [r.getMessage() for r in caplog.records if r.name == "features" and r.levelno == logging.WARNING]
+diff --git a/tests/test_review_r1.py b/tests/test_review_r1.py
+index 72199e5..a66afff 100644
+--- a/tests/test_review_r1.py
++++ b/tests/test_review_r1.py
+@@ -103,9 +103,9 @@ async def test_schema_matches_independent_expectations(tmp_path):
+             "prompt_captured_at", "prompt_expires_at", "prompt_purged_at", "created_at", "updated_at",
+             "job_ref", "job_ref_conflicts"]
+         events = [r[1] for r in conn.execute("PRAGMA table_info(token_events)")]
+-        assert events[-8:] == ["complexity_method", "request_system_chars", "request_history_chars",
++        assert events[-9:] == ["complexity_method", "request_system_chars", "request_history_chars",
+                                "request_tool_output_chars", "request_file_content_chars", "request_file_ref_count",
+-                               "request_tool_names_json", "ingest_seq"]
++                               "request_tool_names_json", "ingest_seq", "agent"]
+         unique = conn.execute("SELECT \"unique\" FROM pragma_index_list('tasks') WHERE name='ux_tasks_project_session_turn'"
+                               ).fetchone()[0]
+         cols = [r[2] for r in conn.execute("PRAGMA index_info('ux_tasks_project_session_turn')")]
+diff --git a/tests/test_security_meta.py b/tests/test_security_meta.py
+index 68cde2a..d2d6254 100644
+--- a/tests/test_security_meta.py
++++ b/tests/test_security_meta.py
+@@ -60,7 +60,7 @@ async def test_meta_preflight_with_flags_off_and_valid_config(client, monkeypatc
+     features.refresh()
+     body = (await client.get("/api/meta")).json()
+     assert body == {
+-        "schema_version": 12,
++        "schema_version": 13,
+         "task_prompt_capture": False,
+         "task_prompt_capture_disabled_reason": "not_enabled",
+         "jev_enabled": False,
+diff --git a/tests/test_task_ingest.py b/tests/test_task_ingest.py
+index 501e220..5277f91 100644
+--- a/tests/test_task_ingest.py
++++ b/tests/test_task_ingest.py
+@@ -116,6 +116,19 @@ async def test_non_approved_methods_are_never_chosen_at_ingest(client):
+     assert (task["start_complexity"], task["start_complexity_method"]) == (2, "request-shape-v1")
+ 
+ 
++async def test_cc_start_complexity_uses_its_own_method_and_earliest_llm(client):
++    await _post(
++        client,
++        _ev("late", occurred_at=_ts(30), complexity=4, complexity_method="cc-input-size-v1"),
++        _ev("tool", occurred_at=_ts(1), event_type="tool_call", complexity=5,
++            complexity_method="cc-input-size-v1"),
++        _ev("early", occurred_at=_ts(5), complexity=2, complexity_method="cc-input-size-v1"),
++    )
++    (task,) = await _tasks()
++    assert (task["start_complexity"], task["start_complexity_method"], task["start_complexity_event_at"]) == (
++        2, "cc-input-size-v1", _ts(5))
++
++
+ # --- AC10a / AC10d -------------------------------------------------------------------
+ 
+ 

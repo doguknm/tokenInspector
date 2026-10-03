@@ -1,0 +1,25 @@
+TASK — shorten again
+
+Your previous edit is 4030 characters, not under 4000. Cut MORE. Return only the edited prompt in a fenced
+code block. Nothing else. No tools, no commentary.
+
+HARD CONSTRAINT: final prompt must be UNDER 4000 characters; aim for <= 3900 to leave margin. Count the
+characters of YOUR OUTPUT TEXT itself (the prompt only, not this instruction, not the fence) and state the
+count on the line immediately BEFORE the fenced block. If it is not under 4000, cut more.
+
+Compress by merging and trimming prose only. Do not drop any rule, any checkpoint, any mutation-control
+requirement, the runner requirements, the privacy rules, the models, the stop conditions, or the END
+sequence. Do not add new rules.
+
+DRAFT (4030 chars):
+
+---BEGIN DRAFT---
+/goal Build Token Inspector Agents tab (`tokenInspector`,`feat/cc-agent-usage`) on goal 1 data.
+Precondition: require "Contract for goal 2" in `Plans\cc-agent-usage\status.md` and goal 1 commits; else stop/report, invent no fields. Work only `C:\Users\Bentego_Admin\Projects\tokenInspector-agents`. `C:\Users\Bentego_Admin\Projects\tokenInspector` is LIVE: never switch branch/edit `producers/claude_code/`; use its `.venv` Python for suites.
+Add Agents beside Overview/Projects/Models/Complexity/Tasks/Jobs/Settings. Contract only; tested read-only backend iff gap. Every number names unit/period. Include URL-persistent period/runtime/project/model/agent/complexity-method filters; KPIs calls,tasks,tokens split prompt/completion/cache-read/cache-creation (never silent-sum),priced cost+unpriced count (unpriced never `$0`),agents seen,unlabeled-call share; sortable agents: calls/tasks/token splits,per-call/task averages,cost+unpriced,cost/task,error rate,top model,low-sample mark; agent×tier calls/tokens heatmap/stacked bars naming method; tasks/tier by start complexity; token-type stacks/agent+cache-read share; daily calls-or-tokens/agent top-N+other; drill-down models/projects/tiers/main-thread/subagent share/jobs→Jobs filter; note labels start goal 1 deploy,older="no label",hermes-agent rows have `hermes -z` exit window.
+CP1: read files/tests; run one read-only detached/temp-worktree session: `hermes chat --provider openai-codex --model gpt-6-astra`; state "PEGA unreachable"; no hostnames/tokens/tailnet names/user paths. Output IA+desktop/narrow wireframes; accessible-color Chart.js/question,no chart for one-number answers; goal-1 requests,proof/name missing aggregation; loading/empty/partial/error states,closed-error policy; browser tests,mutation targets,decisions/options/recommendation. Save `Plans\cc-agent-usage\hermes\cc-agents-tab-plan.md`,TAG `cc-agents-tab-plan`; present/record decisions under "Decisions, goal 2"; build nothing first. Commit/push.
+CP2: build via hermes.sh/default model/no model-provider arg; one job,second iff incomplete. Implement nav/view/requests/states+Playwright tests,no dependencies. Module-scoped servers+separate DBs seed agents/all tiers/priced+unpriced/"no label"/empty/error. Per display/control: break;named test red;restore;log mutation. Mutate unpriced=`$0`; hidden low-sample; wrong filter→request; absent empty; blank error; no latest-request-wins so old slow overwrites new; no method label; pooled tier/method; wrong cache-read denominator; per-cell tasks added globally; dropped unknown-agent/"no label". Survivor=missing test; never weaken assertions. Runner: `if __name__ == "__main__":`; subprocess `encoding="utf-8", errors="replace"`; mutate singly; restore bytes in `finally`; verify originals each time. Checkpoint: Windows `.venv/Scripts/python.exe -m pytest -q` incl. browser,then `-m browser`; `node --check static/app.js`; `py_compile`; `git diff --check`; hermes backend suite in temp detached worktree,browser skips. Commit/push.
+CP3: update README,AGENTS.md,CHANGELOG,status.md: meanings/coverage,module map/contract,verification/mutations/limitations/open items,frontend-only/goal-1 deploy notes. Push commits to `hermes`+`origin` if reachable.
+Each hermes job: queue row+peer message before/after. Windows OpenSSH; Windows `python`,hermes `python3`; Write scripts; preserve CRLF. Design only gpt-6-astra; build only hermes default. No review; checkpoints need regression/mutations/commit/push. Model/provider error/HTTP 429: stop/report exact text; never retry/switch. No deploy/install/restart/settings.json changes. Privacy: pseudonymous labels only; no prompt text. At 95% weekly Claude usage finish step,commit,report,stop. Reply Turkish; end each reply `Hermes kullanıldı` or `Hermes kullanılmadı`.
+Done only after plan/decisions/UI/contracts/tests/mutations/suites/docs pass and pushes; no deploy. Report decisions,requests,files/commits,tests,mutations,deploy needs; run `/caveman off`,`/sync-docs`,`/compress`,`/sync-memory`; stop.
+---END DRAFT---

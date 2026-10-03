@@ -1,0 +1,200 @@
+diff --git a/producers/claude_code/cc_agent.py b/producers/claude_code/cc_agent.py
+index 8d39340..5497f9d 100644
+--- a/producers/claude_code/cc_agent.py
++++ b/producers/claude_code/cc_agent.py
+@@ -14,6 +14,7 @@ BUILTIN = ("general-purpose", "fork")
+ SAFE_AGENT_RE = re.compile(
+     r"^(?:[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$"
+ )
++_PSEUDONYM_RE = re.compile(r"^a-[0-9a-f]{16}$")
+ _META_MAX = 64 * 1024
+ 
+ 
+@@ -28,6 +29,8 @@ def sanitize(value, *, mode, allowlist, local_names) -> str:
+         return pseudonym(value)
+     if value in BUILTIN:
+         return value
++    if _PSEUDONYM_RE.fullmatch(value):
++        return value
+     local = {name.lower() for name in local_names if isinstance(name, str)}
+     if (mode == "allowlist" and SAFE_AGENT_RE.fullmatch(value) and value in allowlist
+             and value.lower() not in local):
+@@ -40,11 +43,32 @@ def read_sidecar_agent_type(path: str) -> Optional[str]:
+         transcript = Path(path)
+         if transcript.parent.name != "subagents" or not transcript.name.startswith("agent-"):
+             return None
++
++        def read(candidate: Path) -> tuple[bool, Optional[str]]:
++            try:
++                if candidate.stat().st_size > _META_MAX:
++                    return True, None
++                data = json.loads(candidate.read_bytes().decode("utf-8"))
++            except FileNotFoundError:
++                return False, None
++            except Exception:
++                return True, None
++            value = data.get("agentType") if isinstance(data, dict) else None
++            return True, value if isinstance(value, str) and value else None
++
+         sidecar = transcript.with_suffix(".meta.json")
+-        if sidecar.stat().st_size > _META_MAX:
+-            return None
+-        data = json.loads(sidecar.read_bytes().decode("utf-8"))
+-        value = data.get("agentType") if isinstance(data, dict) else None
+-        return value if isinstance(value, str) and value else None
++        found, value = read(sidecar)
++        if found:
++            return value
++        candidate = transcript.parent.parent
++        for _ in range(8):
++            found, value = read(candidate / "subagents" / sidecar.name)
++            if found:
++                return value
++            parent = candidate.parent
++            if parent == candidate:
++                break
++            candidate = parent
++        return None
+     except Exception:
+         return None
+diff --git a/producers/claude_code/cc_state.py b/producers/claude_code/cc_state.py
+index 1f05100..4041dfa 100644
+--- a/producers/claude_code/cc_state.py
++++ b/producers/claude_code/cc_state.py
+@@ -18,6 +18,8 @@ from datetime import datetime, timezone
+ from pathlib import Path
+ from typing import Any, Optional
+ 
++import cc_agent
++
+ MAX_STATE_FILES = 512
+ MAX_STATE_BYTES = 4096
+ TMP_MAX_AGE_S = 3600
+@@ -83,6 +85,25 @@ def release(lock: Optional[Path]) -> None:
+ 
+ # ---- state ------------------------------------------------------------------------------------------
+ 
++def _agent_policy() -> tuple[str, tuple]:
++    try:
++        data = json.loads((Path.home() / ".config" / "token-inspector" / "claude-code.json").read_bytes().decode("utf-8"))
++        file_cfg = data if isinstance(data, dict) else {}
++    except Exception:
++        file_cfg = {}
++    mode = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_MODE", "").strip() or file_cfg.get("agent_name_mode")
++    mode = mode if mode in ("deny", "allowlist") else "deny"
++    raw_allowlist: Any = file_cfg.get("agent_name_allowlist")
++    env_allowlist = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", "").strip()
++    if env_allowlist:
++        try:
++            raw_allowlist = json.loads(env_allowlist)
++        except Exception:
++            raw_allowlist = []
++    allowlist = tuple(value for value in raw_allowlist if isinstance(value, str)) if isinstance(raw_allowlist, list) else ()
++    return mode, allowlist
++
++
+ def _valid_ctx(ctx: Any) -> Optional[dict[str, Any]]:
+     if not isinstance(ctx, dict):
+         return None
+@@ -104,6 +125,11 @@ def _valid_ctx(ctx: Any) -> Optional[dict[str, Any]]:
+         if (all(present) and isinstance(agent, str) and len(agent) <= 64 and _AGENT_RE.fullmatch(agent)
+                 and agent_source in _AGENT_SOURCES and isinstance(run_key, str) and _KEY_RE.fullmatch(run_key)
+                 and type(version) is int and version == 1):
++            if agent not in cc_agent.RESERVED:
++                mode, allowlist = _agent_policy()
++                import cc_attribution
++                agent = cc_agent.sanitize(agent, mode=mode, allowlist=allowlist,
++                                          local_names=cc_attribution.local_names())
+             clean.update({"agent": agent, "agent_source": agent_source, "agent_run_key": run_key,
+                           "agent_policy_version": version})
+     return clean
+diff --git a/tests/test_cc_agent.py b/tests/test_cc_agent.py
+index c46436b..03b7c2a 100644
+--- a/tests/test_cc_agent.py
++++ b/tests/test_cc_agent.py
+@@ -16,6 +16,7 @@ def agent(tmp_path, monkeypatch):
+ @pytest.mark.parametrize(("value", "mode", "allowlist", "expected"), [
+     ("general-purpose", "deny", (), "general-purpose"),
+     ("fork", "deny", (), "fork"),
++    ("a-0123456789abcdef", "deny", (), "a-0123456789abcdef"),
+     ("my-agent", "allowlist", ("my-agent",), "my-agent"),
+ ])
+ def test_sanitize_verified_values(agent, value, mode, allowlist, expected):
+@@ -38,17 +39,29 @@ def test_sanitize_rejects_bad_values_and_local_names(agent):
+ 
+ 
+ def test_sidecar_agent_type_is_bounded(agent, tmp_path):
+-    transcript = tmp_path / "subagents" / "agent-id.jsonl"
+-    transcript.parent.mkdir()
++    transcript = tmp_path / "session" / "subagents" / "agent-id.jsonl"
++    transcript.parent.mkdir(parents=True)
+     transcript.write_text("", encoding="utf-8")
+     sidecar = transcript.with_suffix(".meta.json")
+     sidecar.write_text(json.dumps({"agentType": "fork", "description": "secret"}), encoding="utf-8")
+     assert agent.read_sidecar_agent_type(str(transcript)) == "fork"
++
++    nested = tmp_path / "session" / "nested" / "subagents" / "agent-up.jsonl"
++    nested.parent.mkdir(parents=True)
++    nested.write_text("", encoding="utf-8")
++    upper_sidecar = transcript.parent / "agent-up.meta.json"
++    upper_sidecar.write_text(json.dumps({"agentType": "general-purpose"}), encoding="utf-8")
++    assert agent.read_sidecar_agent_type(str(nested)) == "general-purpose"
++
+     sidecar.write_text("not-json", encoding="utf-8")
+     assert agent.read_sidecar_agent_type(str(transcript)) is None
+     sidecar.write_bytes(b"{" + b" " * (64 * 1024) + b"}")
+     assert agent.read_sidecar_agent_type(str(transcript)) is None
+     assert agent.read_sidecar_agent_type(str(transcript.with_name("agent-missing.jsonl"))) is None
++    outside = tmp_path / "session" / "agent-id.jsonl"
++    outside.write_text("", encoding="utf-8")
++    outside.with_suffix(".meta.json").write_text(json.dumps({"agentType": "fork"}), encoding="utf-8")
++    assert agent.read_sidecar_agent_type(str(outside)) is None
+ 
+ 
+ def test_agent_config_env_overrides_file(tmp_path, monkeypatch):
+diff --git a/tests/test_cc_state_client.py b/tests/test_cc_state_client.py
+index 65ba4c8..531675c 100644
+--- a/tests/test_cc_state_client.py
++++ b/tests/test_cc_state_client.py
+@@ -68,13 +68,39 @@ def test_agent_context_round_trip_and_malformed_block_drop(cc, tmp_path):
+     assert st.save(directory, key, offset=1, turn=None, file_id=[1, 2], pending=False,
+                    ctx={**base, **agent})
+     assert st.load(directory, key)["ctx"] == {**base, **agent}
+-    assert st.save(directory, key, offset=2, turn=None, file_id=[1, 2], pending=False,
++    for offset, label in enumerate(("custom", "unknown"), 2):
++        structural = dict(agent, agent=label, agent_source="unknown")
++        assert st.save(directory, key, offset=offset, turn=None, file_id=[1, 2], pending=False,
++                       ctx={**base, **structural})
++        assert st.load(directory, key)["ctx"] == {**base, **structural}
++    assert st.save(directory, key, offset=4, turn=None, file_id=[1, 2], pending=False,
+                    ctx={**base, **agent, "agent_run_key": "raw-id"})
+     assert st.load(directory, key)["ctx"] == base
+-    assert st.save(directory, key, offset=3, turn=None, file_id=[1, 2], pending=False, ctx=base)
++    assert st.save(directory, key, offset=5, turn=None, file_id=[1, 2], pending=False, ctx=base)
+     assert st.load(directory, key)["ctx"] == base
+ 
+ 
++def test_state_load_reapplies_revoked_agent_name_policy(cc, tmp_path, monkeypatch):
++    st = cc["cc_state"]
++    agent = cc["cc_agent"]
++    directory = tmp_path / "state"
++    directory.mkdir()
++    key = "3" * 32
++    raw_name = "operator-agent"
++    ctx = {"project": "proj", "project_source": "fallback", "job": {}, "agent": raw_name,
++           "agent_source": "sidecar", "agent_run_key": "4" * 32, "agent_policy_version": 1}
++    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_MODE", "allowlist")
++    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", json.dumps([raw_name]))
++    assert st.save(directory, key, offset=1, turn=None, file_id=[1, 2], pending=False, ctx=ctx)
++    assert raw_name.encode() in (directory / f"{key}.json").read_bytes()
++
++    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_MODE", "deny")
++    loaded = st.load(directory, key)
++    assert loaded["ctx"]["agent"] == agent.pseudonym(raw_name)
++    assert st.save(directory, key, offset=2, turn=None, file_id=[1, 2], pending=False, ctx=loaded["ctx"])
++    assert raw_name.encode() not in (directory / f"{key}.json").read_bytes()
++
++
+ def test_state_holds_only_offsets_and_ids(cc, tmp_path, monkeypatch):
+     srv = FakeServer()
+     monkeypatch.setenv("TOKEN_INSPECTOR_URL", srv.url)

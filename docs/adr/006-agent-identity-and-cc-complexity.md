@@ -66,6 +66,11 @@ Agent and Claude Code complexity coverage starts when schema-v13-compatible prod
 calls are not backfilled. A named label is not promised for every run; unverifiable resumed/backlog drains are
 `unknown`.
 
+The Hermes producer plugin is not changed by this decision. Its event contract carries no agent label today, so
+Hermes events keep a null agent — the tab must not pretend Hermes emitted `main`. The plugin's `child_role`
+hook value is a possible future source for the same field; a delegate tool name is not an equivalent source,
+because tool names describe tool events. Hermes `request-shape-v1` complexity is unchanged.
+
 ## Consequences
 
 - Agent labels are privacy-bounded, stable where pseudonymized, and cannot spoof reserved producer meanings.
