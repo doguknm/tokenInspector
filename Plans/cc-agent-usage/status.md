@@ -227,6 +227,19 @@ Agent and CC complexity exist only from the goal-1 deploy onward; older events a
 `hermes -z` jobs can lose their last ~2 s of events (exit window). A named label is not promised for
 every run — `unknown` is honest.
 
+## Decisions, goal 2
+
+Recorded 2026-10-03 after the CP1 report and user decision round:
+
+1. **CP2 baseline:** use current `feat/cc-agent-usage` HEAD with goal-1 implementation. CP1's pinned-commit audit is historical evidence only; it does not describe current HEAD.
+2. **Missing metrics:** implement a separately scoped and tested backend aggregation before claiming full requested coverage. Do not substitute role, task, or unrelated analytics data.
+3. **Per-agent task counts:** add a dedicated exact distinct-task aggregation so the sortable table can show task totals safely.
+4. **Low sample:** mark fewer than 5 calls; label the threshold as calls.
+5. **Jobs handoff:** runtime-only with an explicit warning; do not imply agent, project, model, method, or exact-period filtering.
+6. **Agent labels:** display exact labels neutrally; render null as “No label”, `unknown` distinctly, and `a-<hash>` as a pseudonym. Do not infer built-in/custom/subagent classification or structural share without authoritative metadata.
+
+CP2 must first reconcile the CP1 evidence against the current goal-1 HEAD, then update the implementation plan and contract for the separately approved backend aggregation. No code was built before the decision round.
+
 ## Deploy (later goal-3, not this goal)
 
 Nothing is deployed here. The later deploy needs: apply migration v13 (backend restart with the
