@@ -100,7 +100,7 @@ Rollback and purge: see the runbook in ADR-002 (`scripts/purge_task_prompts.py`,
 
 ## Launcher jobs and cost per job (O9, schema v11)
 
-> **Status:** on the feature branch, not deployed. Production still runs the O10 release until the single O9 deploy.
+> **Status:** in production since 2026-10-03 (O9 deploy, schema v12). Note: `hermes -z` hard-exits without flushing the plugin queue, so the last ~2 s of a job's events can be missing and a very short job may show no calls (Known Limitations in the O9 status).
 
 A launcher job (`hermes.sh send`, `hermes.sh devir-baslat`) is tied to its LLM calls through event tags. Contract: [ADR-003](docs/adr/003-job-correlation-contract.md).
 
@@ -149,7 +149,7 @@ curl -s "http://127.0.0.1:8100/api/export/v1/events?from=2026-09-01T00:00:00Z&to
 
 `producers/claude_code/` is a stdlib-only Claude Code hook (`Stop`, `SubagentStop`, `SessionEnd`) that sends one `llm_request` event per API call from the session transcript: allowlisted metadata only, never prompt or response text, tool data or paths. It is bounded to 5 s per hook, fail-open, and at-least-once with idempotent `cc-` event ids that are unique across projects ([ADR-004](docs/adr/004-cross-source-dedup-authority.md)). Install, configuration, sent fields and limits: [producers/claude_code/README.md](producers/claude_code/README.md).
 
-> **Status:** built and tested, **not installed** on any machine yet. `install.py` defaults to a content-free dry-run summary; `--apply` changes the global `~/.claude/settings.json` and is a separate, user-approved deploy step.
+> **Status:** installed on Windows and on hermes since 2026-10-03 (O9 deploy). `install.py` defaults to a content-free dry-run summary; `--apply` / `--uninstall --apply` change the global `~/.claude/settings.json` and are user-approved steps. On Windows the producer URL lives in `~/.config/token-inspector/claude-code.json` (never in repo files).
 
 ## Connecting Hermes or any other project
 

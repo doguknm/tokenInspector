@@ -16,7 +16,7 @@ Producer lifecycle
 
 The Hermes producer lives in the separate `token_inspector` repository and registers lifecycle hooks through the supported plugin registry.
 
-A second producer (O9, on the feature branch, not installed yet) is the Claude Code hook in `producers/claude_code/`. It runs as a stdlib-only script on Claude Code's `Stop`, `SubagentStop` and `SessionEnd` hooks, reads only the new part of the session transcript, and posts one `llm_request` per API call to the same batch endpoint:
+A second producer (O9, installed on Windows and hermes since 2026-10-03) is the Claude Code hook in `producers/claude_code/`. It runs as a stdlib-only script on Claude Code's `Stop`, `SubagentStop` and `SessionEnd` hooks, reads only the new part of the session transcript, and posts one `llm_request` per API call to the same batch endpoint:
 
 ```text
 Claude Code hook (stdin: transcript location + cwd only)
@@ -144,7 +144,7 @@ Backend unit: token-inspector.service
 Bind: 127.0.0.1:8100
 Production DB: user-local application data directory
 Plugin: token_inspector, independently installed and gateway-loaded
-Claude Code hook: global ~/.claude/settings.json entries via producers/claude_code/install.py (not installed yet)
+Claude Code hook: global ~/.claude/settings.json entries via producers/claude_code/install.py (installed on Windows and hermes)
 Claude Code hook state: per-user local state dir (cursor per transcript, counters.json with integers only)
 ```
 

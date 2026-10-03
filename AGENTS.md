@@ -23,6 +23,7 @@ FastAPI bind: 127.0.0.1:8100
 Systemd user unit: token-inspector.service
 Database: /home/dogukan/.local/share/token-inspector/token-inspector.db
 Raw prompt storage: disabled
+Release: O9 (schema v12), deployed 2026-10-03; plugin 7a6d094; Claude Code hook installed on Windows and hermes
 ```
 
 The service unit sets `DB_PATH`; the repository-relative default exists only for development compatibility. Database files and backups stay outside Git and outside Vault/NotebookLM.
@@ -120,7 +121,7 @@ A launcher job is an aggregate over event tags, not a table (ADR-003). The launc
 
 ### What the numbers mean (consumer contract)
 
-- **Coverage:** in production today the only producer is the Hermes plugin (runtime `hermes-agent`); totals there are hermes-agent totals, not all LLM spend. After the O9 deploy there are two counting producers, one per runtime (ADR-004): `hermes-plugin` (`hermes-agent`) and `claude-code-hook` (`claude-code@windows`; `claude-code@hermes`, which includes `claude -p` hand-off runs started by `hermes.sh devir-baslat` and interactive Claude Code sessions on hermes — the latter without a `job_ref`). Not measured: application provider calls (`app` runtime, no producer built), and Claude Code calls that leave no usage record (API errors, an interrupted last call of a session that never continues). The Claude Code hook is not installed until that deploy.
+- **Coverage:** since the O9 deploy (2026-10-03) there are two counting producers, one per runtime (ADR-004): `hermes-plugin` (`hermes-agent`) and `claude-code-hook` (`claude-code@windows`; `claude-code@hermes`, which includes `claude -p` hand-off runs started by `hermes.sh devir-baslat` and interactive Claude Code sessions on hermes — the latter without a `job_ref`). Not measured: application provider calls (`app` runtime, no producer built), and Claude Code calls that leave no usage record (API errors, an interrupted last call of a session that never continues). A `hermes -z` job loses its last ~2 s of events (hermes hard-exits before the plugin flushes), so a very short job can show no calls. Events before 2026-10-03 are hermes-agent only.
 - **Jobs:** `GET /api/jobs` counts `llm_request` events only, excluding evaluator (JEV) usage and `attribution_invalid` events. `cost_usd` sums priced calls and is `null` when none is priced; `unpriced_count > 0` means incomplete. A task belongs to at most one job (first job wins); conflicts are reported as calls (`conflict_count`) and affected tasks (`conflict_task_count`). Filters select whole jobs; `days` selects jobs by their last counted event, sums cover the whole job. There is no job-duration event: `first_event_at`/`last_event_at` are not end-to-end job time.
 - **Task totals** come from that task's own `llm_request` events only. A root task excludes its children, so summing tasks counts each call once. A task row and its calls must never be added together.
 - **Cost:** `cost_usd` sums priced calls only and is `null` when none is priced. `unpriced_count > 0` means the total is incomplete; it is never zero or free. `estimated_cost_usd` holds partial, estimated and legacy costs separately. For subscription providers the dollar value is a list-price estimate, not a bill or a quota.

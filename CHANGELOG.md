@@ -4,6 +4,10 @@ All notable user-visible and operational changes are documented here.
 
 ## Unreleased
 
+### Deployed
+
+- 2026-10-03: O9 in production on hermes (backend schema v12, plugin with job tags, Claude Code hook on Windows and hermes, the read-only export v1). Known gap: `hermes -z` jobs lose their last ~2 s of events at exit.
+
 ### Added
 
 - Complexity view: tier × model comparison (calls, tasks, per-call and per-task token split, latency, TTFT, error rate, priced cost per task, completion counts, low-sample marks) with project/model/method/day filters, backed by the new `GET /api/analytics/complexity-matrix`; the demo seed now carries per-call tiers and two priced models.
@@ -17,13 +21,13 @@ All notable user-visible and operational changes are documented here.
 - JEV skips tasks of unlisted projects or non-root tasks with `project_not_allowed`, and turns that have not ended with `task_not_completed`, checked before every provider attempt and before the retention checks; no automatic purge.
 - `GET /api/tasks?allowed_only=true` (token required); `jev_pilot.py select` uses it.
 - Plugin: `task_prompt_allowed_projects` and `task_prompt_deny_path_globs` (default `~/Projects/*-devir`); prompts only for root sessions, stripped from queue and spool when a session turns out to be a subagent.
-- Job correlation (O9, schema v11; not deployed yet): launcher env contract `TOKEN_INSPECTOR_JOB_REF` / `_WORK_TYPE` / `_JOB_ATTEMPT` (the `/hermes` skill passes `HERMES_WORK_TYPE` / `HERMES_JOB_ATTEMPT` to `hermes.sh`), reserved tag keys `job_ref`, `runtime`, `work_type`, `job_attempt`, `producer` normalized at ingest without rejecting events, `attribution_invalid` mark, `tasks.job_ref` (first job wins) and `tasks.job_ref_conflicts` (ADR-003).
+- Job correlation (O9, schema v11): launcher env contract `TOKEN_INSPECTOR_JOB_REF` / `_WORK_TYPE` / `_JOB_ATTEMPT` (the `/hermes` skill passes `HERMES_WORK_TYPE` / `HERMES_JOB_ATTEMPT` to `hermes.sh`), reserved tag keys `job_ref`, `runtime`, `work_type`, `job_attempt`, `producer` normalized at ingest without rejecting events, `attribution_invalid` mark, `tasks.job_ref` (first job wins) and `tasks.job_ref_conflicts` (ADR-003).
 - `GET /api/jobs` and a dashboard **Jobs** view: cost per launcher job from priced calls only (unpriced count shown, never `$0`), JEV usage and invalid attribution excluded, conflicts as calls and tasks, runtime/work-type/day filters that select whole jobs.
 - `scripts/repair_task_parents.py`: re-links pre-O9 cross-project child tasks (dry-run default, counts only; `--apply` takes a verified online backup first).
 - `scripts/rollback_schema.py` (+ `scripts/rollback_v11.sql`): the only supported schema rollback, with an exact source-version guard.
-- Claude Code producer `producers/claude_code/` (O9; built, **not installed**): stdlib-only `Stop`/`SubagentStop`/`SessionEnd` hook sending one event per API call with allowlisted metadata only (never text or paths), 5 s bound, fail-open, at-least-once with idempotent `cc-` ids; subagents as child tasks; `install.py` with a content-free dry-run summary, exact-command ownership, backup, atomic write and the PossibleSkills settings lock (ADR-004).
+- Claude Code producer `producers/claude_code/` (O9): stdlib-only `Stop`/`SubagentStop`/`SessionEnd` hook sending one event per API call with allowlisted metadata only (never text or paths), 5 s bound, fail-open, at-least-once with idempotent `cc-` ids; subagents as child tasks; `install.py` with a content-free dry-run summary, exact-command ownership, backup, atomic write and the PossibleSkills settings lock (ADR-004).
 - Plugin: reads the launcher job env once per process and sends validated `job_ref` / `work_type` / `job_attempt` plus `runtime=hermes-agent` / `producer=hermes-plugin` on its events, and `parent_project_name` on child events.
-- Versioned read-only export v1 (O9 Phase 3, schema v12; not deployed yet): `GET /api/export/v1/{jobs,tasks,events}` with a JSON envelope (`schema_version`, period, `fields`, staleness, coverage), keyset pagination over a snapshot, start-time cohorts for tasks and jobs, field and value allowlists, static errors (`invalid_range`, `invalid_limit`, `invalid_cursor`, `snapshot_expired`, `busy`). Contract `docs/export-contract-v1.md`, ADR-005.
+- Versioned read-only export v1 (O9 Phase 3, schema v12): `GET /api/export/v1/{jobs,tasks,events}` with a JSON envelope (`schema_version`, period, `fields`, staleness, coverage), keyset pagination over a snapshot, start-time cohorts for tasks and jobs, field and value allowlists, static errors (`invalid_range`, `invalid_limit`, `invalid_cursor`, `snapshot_expired`, `busy`). Contract `docs/export-contract-v1.md`, ADR-005.
 - Jobs view: an **Export (v1)** panel that downloads jobs, tasks or LLM calls as CSV built in the browser from the JSON export (same fields, formula-injection guard, 100 000-row cap) and links the JSON first page.
 - Schema v12: `token_events.ingest_seq` assigned in commit order from the persistent high-water `export_state.last_seq`, plus `export_state.revision`/`epoch` for cursor invalidation; rows written by older code are numbered at startup. `scripts/rollback_schema.py` gains the v12 → v11 step (`scripts/rollback_v12.sql`).
 
