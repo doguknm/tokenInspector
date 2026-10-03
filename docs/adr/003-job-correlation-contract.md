@@ -1,6 +1,6 @@
 # ADR-003: Job Correlation Contract
 
-**Status:** Accepted (implemented on the feature branch; not deployed yet)
+**Status:** Accepted (implemented; in production since 2026-10-03)
 **Date:** 2026-09-28
 **Plan:** `Plans/o9-job-correlation-cc-producer/` (backend.md "Shared definitions", J0–J7; status.md Drift Log "J0 verdict", "J2 measurement")
 

@@ -37,6 +37,7 @@ The dashboard separates bounded filesystem repository inventory from event-backe
 - Production observed activity returned only `hermes` after scoped cleanup.
 - Two assistant-created E2E traces were identified by provenance and 8 associated events were deleted after an online SQLite backup; no `pegadocrag` events remain.
 - `docrag-guardrails` appears as inventory-only with zero events/tokens.
+- 2026-10-03: O9 deployed on hermes (schema 12, plugin `7a6d094`, Claude Code hook on Windows and hermes, export v1); live AC1.2 and AC2.2 observed. Details: `Plans/o9-job-correlation-cc-producer/status.md`.
 
 ## Open Items
 

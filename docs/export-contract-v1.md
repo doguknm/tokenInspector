@@ -1,7 +1,7 @@
 # Token Inspector export contract v1
 
 **Contract version:** `schema_version: 1` (this document)
-**Status:** implemented on branch `feat/task-telemetry-jev-pilot` (O9 Phase 3); not deployed yet
+**Status:** implemented (O9 Phase 3); in production since 2026-10-03
 **Design record:** [ADR-005](adr/005-export-contract.md)
 
 This contract is versioned **separately** from the Token Inspector application version and from the

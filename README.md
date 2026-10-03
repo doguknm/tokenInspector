@@ -131,7 +131,7 @@ python scripts/repair_task_parents.py --db "$DB_PATH" --apply    # verified onli
 
 ## Versioned read-only export (O9, schema v12)
 
-> **Status:** on the feature branch, not deployed.
+> **Status:** in production since 2026-10-03 (O9 deploy).
 
 `GET /api/export/v1/jobs`, `/tasks` and `/events` serve jobs, tasks and LLM calls as JSON for other local tools. Read-only, no auth (also with `INGEST_TOKEN` set). Contract, field tables and error codes: [docs/export-contract-v1.md](docs/export-contract-v1.md); design: [ADR-005](docs/adr/005-export-contract.md).
 
