@@ -41,7 +41,7 @@ Project name: alias (longest matching root) → sanitized git `origin` slug → 
 
 ## What is sent
 
-Only these fields: `client_event_id`, `event_type`, `occurred_at`, `provider` (`anthropic`), `model` (`claude-…` or `unknown`), `session_id`, `turn_id`, `task_hierarchy`, `parent_session_id`, `parent_turn_id`, `parent_project_name`, `role` (`primary`/`subagent`), `prompt_tokens` (input without cache), `cache_read_tokens`, `cache_creation_tokens`, `completion_tokens`, `input_tokens_include_cache` (`false`), `status`, `error_type` (`api_error` only), `finish_reason`, `tool_call_count`, and tags `runtime`, `producer`, `project_source`, `schema`, `job_ref`, `work_type`, `job_attempt`.
+Only these fields: `client_event_id`, `event_type`, `occurred_at`, `provider` (`anthropic`), `model` (`claude-…` or `unknown`), `session_id`, `turn_id`, `task_hierarchy`, `parent_session_id`, `parent_turn_id`, `parent_project_name`, `role` (`primary`/`subagent`), `prompt_tokens` (input without cache), `cache_read_tokens`, `cache_creation_tokens`, `completion_tokens`, `input_tokens_include_cache` (`false`), `status`, `error_type` (`api_error` only), `finish_reason` (closed list `end_turn`, `max_tokens`, `stop_sequence`, `tool_use`, `pause_turn`, `refusal`, `model_context_window_exceeded`; any other value omitted), `tool_call_count`, and tags `runtime`, `producer`, `project_source`, `schema`, `job_ref`, `work_type`, `job_attempt`.
 
 Session, turn and parent ids are `sha256(raw)[:32]` pseudonyms; `client_event_id` is `cc-` + a hash of `message.id` and `requestId` (ADR-004). **Never sent:** prompt or response text (the producer never sends prompt text, under any setting), tool names, inputs or outputs, `cwd`, transcript paths, git branch, version, skill or agent names, hostnames, `error_message`, `request_tool_names`.
 
@@ -49,7 +49,7 @@ One user turn (the transcript `promptId`) is one task; a subagent run is a child
 
 ## Behaviour and limits
 
-- **Fail-open, bounded:** a watchdog ends the hook after 5 s (`HOOK_BOUND_S`), no POST starts after 2.5 s, each POST times out after 2 s, the installed hook `timeout` is 10 s. The hook prints nothing and always exits 0.
+- **Fail-open, bounded:** a watchdog ends the hook after 5 s (`HOOK_BOUND_S`), no POST starts after 2.5 s, each POST times out after 2 s, the installed hook `timeout` is 10 s. The hook prints nothing and always exits 0, also when a producer module fails to import (an early watchdog covers the imports).
 - **At-least-once + idempotent:** the cursor advances after each acknowledged batch, never past a streaming call whose final usage is not yet on disk. Items the backend rejects are dropped and counted.
 - **State:** `%LOCALAPPDATA%\token_inspector_cc\` (Windows) or `~/.local/state/token_inspector_cc/`: one small file per transcript (offset, turn id, file identity, pending flag, project name and job keys), a lock per transcript, `counters.json` (integers only). At most 512 state files.
 - **Backlog:** work left over (budget) is marked pending and drained by later hooks of the same project directory. A directory where no hook ever fires again keeps its backlog until one does.

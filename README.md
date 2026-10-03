@@ -107,7 +107,7 @@ A launcher job (`hermes.sh send`, `hermes.sh devir-baslat`) is tied to its LLM c
 | Env var (launcher → producer) | Tag | Accepted shape |
 |---|---|---|
 | `TOKEN_INSPECTOR_JOB_REF` | `job_ref` | the launcher id `[devir-]YYYYMMDD-HHMMSS-<pid>` |
-| `TOKEN_INSPECTOR_WORK_TYPE` | `work_type` | `brainstorm`, `review`, `code`, `devir`, `k1`, `k2`; anything else valid-shaped becomes `other` |
+| `TOKEN_INSPECTOR_WORK_TYPE` | `work_type` | `brainstorm`, `review`, `code`, `devir`, `k1`, `k2`, `other`; producers omit any other value (the backend maps an unknown value that still arrives to `other`) |
 | `TOKEN_INSPECTOR_JOB_ATTEMPT` | `job_attempt` | integer 1–9999 (launcher retry, not the per-call `attempt`) |
 
 The `/hermes` skill passes `HERMES_WORK_TYPE` / `HERMES_JOB_ATTEMPT` to `hermes.sh`, which validates them and exports the variables above right before the agent starts. Producers add `runtime` (`hermes-agent`, `claude-code@windows`, `claude-code@hermes`) and `producer` (`hermes-plugin`, `claude-code-hook`) themselves.
