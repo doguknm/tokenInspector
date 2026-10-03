@@ -51,7 +51,8 @@ def canaries() -> list[bytes]:
 
 def modules():
     """Fresh producer modules with default constants (tests monkeypatch them)."""
-    names = ["cc_config", "cc_attribution", "cc_transcript", "cc_events", "cc_state", "cc_client", "cc_hook"]
+    names = ["cc_agent", "cc_complexity", "cc_config", "cc_attribution", "cc_transcript", "cc_events", "cc_state",
+             "cc_client", "cc_hook"]
     return {name: importlib.reload(importlib.import_module(name)) for name in names}
 
 
@@ -195,7 +196,7 @@ def set_home(monkeypatch, home: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     for name in ("TOKEN_INSPECTOR_URL", "TOKEN_INSPECTOR_API_KEY", "TOKEN_INSPECTOR_PROJECT_ALIASES",
                  "TOKEN_INSPECTOR_JOB_REF", "TOKEN_INSPECTOR_WORK_TYPE", "TOKEN_INSPECTOR_JOB_ATTEMPT",
-                 "TI_CC_TEST_MODE"):
+                 "TOKEN_INSPECTOR_AGENT_NAME_MODE", "TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", "TI_CC_TEST_MODE"):
         monkeypatch.delenv(name, raising=False)
 
 

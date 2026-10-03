@@ -30,13 +30,14 @@ FIELDS = {
         "provider", "model", "pricing_model", "status", "error_type", "http_status", "prompt_tokens",
         "completion_tokens", "cache_read_tokens", "cache_creation_tokens", "reasoning_tokens", "cost_status",
         "cost_usd", "estimated_cost_usd", "process_time_ms", "ttft_ms", "attempt", "retry_count", "tool_call_count",
-        "role", "complexity", "complexity_method"],
+        "role", "complexity", "complexity_method", "agent"],
     "tasks": [
         "task_ref", "project_name", "session_id", "runtimes", "runtime_inferred", "job_ref", "work_type",
         "work_types", "hierarchy_status", "parent_task_ref", "root_task_ref", "first_event_at", "last_event_at",
         "wall_time_ms", "completion", "completed_at", "llm_request_count", "prompt_tokens", "completion_tokens",
         "cache_read_tokens", "cache_creation_tokens", "priced_count", "unpriced_count", "cost_usd",
-        "estimated_cost_usd", "cost_complete", "conflict_count", "updated_at"],
+        "estimated_cost_usd", "cost_complete", "conflict_count", "updated_at", "agent", "agent_conflict",
+        "agent_unavailable_calls", "start_complexity", "start_complexity_method"],
     "jobs": [
         "job_ref", "runtimes", "runtime_inferred", "work_type", "work_types", "attempts", "projects", "task_count",
         "llm_request_count", "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_creation_tokens",

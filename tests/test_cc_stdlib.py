@@ -13,7 +13,7 @@ def test_cc_producer_is_stdlib_only():
     files = sorted(PRODUCER_DIR.glob("*.py"))
     siblings = {p.stem for p in files}
     assert {"cc_hook", "cc_config", "cc_transcript", "cc_events", "cc_attribution", "cc_state", "cc_client",
-            "install"} <= siblings
+            "cc_agent", "cc_complexity", "install"} <= siblings
     bad = []
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))

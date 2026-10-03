@@ -1,0 +1,297 @@
+TASK: Implement the CC agent-identity and per-call-complexity DATA layer in this repository checkout.
+Write code and tests. Do NOT commit and do NOT push — at the end run `git add -A` so the whole change-set
+is visible as a staged diff, and stop.
+
+REPO: this is the Token Inspector backend checkout (FastAPI + SQLModel + SQLite) at the current branch.
+Work only inside this directory. There is no production database and no running service here — never start
+a server, never touch ~/.config, never touch any other checkout.
+
+HARD CONSTRAINTS
+- The Claude Code producer under `producers/claude_code/` stays STDLIB-ONLY (no third-party imports), stays
+  fail-open, and its hook time bound (5 s) and send deadline (2.5 s) stay unchanged.
+- Privacy: never store or send prompt/response text, tool arguments, file paths, hostnames, URLs, emails,
+  tokens, or SSH/tailnet names. Message LENGTHS may be numbers; message CONTENT never leaves the producer.
+  Never add a raw agent id or a transcript location to an event, a state file, a log, a counter or an error.
+- The producer must never send a value it has not sanitized. The backend must never reject an event because
+  of an agent value — an invalid value becomes None (fail-open at ingest, strict at the producer).
+- Change only what this prompt names. Do not refactor unrelated code. Match existing style exactly.
+- Keep `input_tokens_include_cache=False` semantics: prompt_tokens already excludes cache for CC events.
+
+BACKGROUND (already decided, do not re-litigate)
+The Claude Code producer today sends no agent identity and no complexity. The Hermes plugin computes
+`request-shape-v1` from request-time shape; Claude Code has no such request metadata, so it gets a
+SEPARATE method name and must never be presented as comparable to `request-shape-v1`.
+
+=== WORKSTREAM 1 — producer agent identity ===
+
+1a. NEW FILE `producers/claude_code/cc_agent.py` (stdlib only). Provide:
+
+    AGENT_MAX = 64
+    # Reserved producer-generated labels (a source value equal to one of these must never acquire its meaning).
+    RESERVED = ("main", "custom", "unknown")
+    # Evidence-backed built-in agent-type registry. The corpus (137 local sidecars) showed exactly these
+    # built-in agentType values; the registry is intentionally minimal and extendable, and an unknown
+    # built-in is treated as a custom name (allowlist-gated), never trusted automatically.
+    BUILTIN = ("general-purpose", "fork")
+    SAFE_AGENT_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$")
+    # The second alternative is the real plugin-agent shape: <plugin>:<agent> (observed as caveman:<agent>).
+
+    def pseudonym(value: str) -> str        # "a-" + sha256(value).hexdigest()[:16]
+    def sanitize(value, *, mode, allowlist, local_names) -> str
+        # Returns one of: "main", "unknown", a BUILTIN member, an allowlisted safe custom name, or a
+        # pseudonym "a-<hash>". Rules, in order:
+        #   1. value not a non-empty str, or > AGENT_MAX -> "unknown"
+        #   2. value in RESERVED (as a SOURCE value) -> pseudonym (never let a source spoof main/custom/unknown)
+        #   3. value in BUILTIN -> value unchanged
+        #   4. else it is a CUSTOM name: it may pass unchanged only when mode == "allowlist" AND
+        #      SAFE_AGENT_RE matches AND value is an exact allowlist member AND value.lower() is not in
+        #      {n.lower() for n in local_names} (detected local identifiers) -> value unchanged
+        #   5. otherwise -> pseudonym(value)
+        # Never trim, lower-case into a new value, slugify, extract a basename, decode, or salvage a
+        # substring. A rejected value is NEVER returned and NEVER logged.
+    def read_sidecar_agent_type(path: str) -> Optional[str]
+        # For a subagent transcript file `<dir>/subagents/agent-<id>.jsonl`, read the sibling
+        # `<dir>/subagents/agent-<id>.meta.json` and return its `agentType` when it is a non-empty str.
+        # Read ONLY the `agentType` key. Never read `description`, `toolUseId`, `name` or any transcript.
+        # Any error (missing/unreadable/oversized/invalid JSON) -> None. Bounded: refuse a file larger than
+        # 64 KiB before parsing, and never raise.
+
+1b. `producers/claude_code/cc_config.py` — add to `Config` and to `load()`:
+    - `agent_name_mode: str = "deny"`      (only "deny" or "allowlist" are valid; anything else -> "deny")
+    - `agent_name_allowlist: tuple = ()`   (exact strings only; non-strings dropped)
+    Read from the existing `claude-code.json` file config keys `agent_name_mode` / `agent_name_allowlist`,
+    and let env `TOKEN_INSPECTOR_AGENT_NAME_MODE` / `TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST` override
+    (allowlist env = JSON array, same style as the existing `TOKEN_INSPECTOR_PROJECT_ALIASES` handling).
+    Defaults are `deny` and empty. Add a `local_names()` helper returning the current hostname candidates
+    already used for attribution (`cc_attribution` has the host check) — reuse that logic, do not duplicate.
+
+1c. `producers/claude_code/cc_state.py` — extend `_valid_ctx` so the agent context survives a checkpoint.
+    Add exactly these keys, each strictly validated, all optional:
+      "agent"                -> str, <= AGENT_MAX, must already be a sanitized label
+      "agent_source"         -> one of ("main", "hook", "sidecar", "unknown")
+      "agent_run_key"        -> str of 32 lowercase hex chars (a pseudonym, never a raw id)
+      "agent_policy_version" -> int 1
+    A malformed agent block is dropped entirely (the rest of ctx is kept). Keep `MAX_STATE_BYTES` in mind:
+    state must stay within 4096 bytes.
+
+1d. `producers/claude_code/cc_hook.py`
+    - In `_run`, read `agent_type` from the hook stdin dict. It exists on SubagentStop. Compute per-target
+      agent context:
+        * main transcript ("primary") -> agent = "main", agent_source = "main"
+        * the SubagentStop target (`agent_transcript_path`, when present) -> agent_source = "hook" using that
+          invocation's `agent_type`, sanitized
+        * a subagent file drained without its own SubagentStop -> FIRST reuse the stored binding in that
+          file's state; if none, read the sidecar via `read_sidecar_agent_type` (agent_source = "sidecar");
+          else agent = "unknown", agent_source = "unknown"
+        * a sibling main transcript drained on someone else's behalf -> use its stored binding; else "main"
+    - Build a PER-TARGET ctx. Today one `ctx` is passed to both targets — that is the bug this replaces:
+      a SubagentStop must never lend its `agent_type` to the main transcript or to another run.
+    - Persist the agent block in the same `cc_state.save(...)` calls that already checkpoint (including the
+      pending-budget and acknowledged-batch checkpoints). On a truncation/reset or a run-key/file-identity
+      mismatch, CLEAR the agent binding and re-resolve — never carry an old run's label into a new run at
+      the same path.
+    - Old state files without agent keys must load fine (agent = re-resolved, not an error).
+    - Pass the resolved agent label into `cc_events.build_event`.
+    - The bound is unchanged: no new slow work. The sidecar read is one bounded small-file read per drained
+      subagent file, inside the existing per-file lock/loop.
+
+1e. `producers/claude_code/cc_events.py`
+    - Add "agent" to `ALLOWED_FIELDS`.
+    - `build_event(..., agent: Optional[str] = None)` adds `"agent": agent` when it is a non-empty str.
+      A None/empty agent adds no key.
+    - Update the module docstring: it currently says agent names are never sent — that is no longer true.
+      New wording: agent names are sent ONLY as a sanitized label (main / a verified built-in / an
+      allowlisted custom name / a stable pseudonym / unknown); raw names, ids and locations never leave.
+
+=== WORKSTREAM 2 — producer per-call complexity ===
+
+2a. NEW FILE `producers/claude_code/cc_complexity.py` (stdlib only):
+
+    METHOD = "cc-input-size-v1"
+
+    def input_size_tier(input_tokens, cache_read, cache_creation) -> Optional[int]
+        # I = input + cache_read + cache_creation
+        # tier 1: 0 <= I < 4000 ; 2: 4000 <= I < 16000 ; 3: 16000 <= I < 64000 ;
+        # 4: 64000 <= I < 128000 ; 5: 128000 <= I
+        # Returns None when any of the three values is not a non-negative int (malformed usage must be
+        # UNSCORED, never silently tier 1). Output tokens, text, tool args, price and elapsed time never
+        # enter the score.
+
+2b. `producers/claude_code/cc_transcript.py`
+    - Add `usage_valid: bool` to `Record`. It is True only when all three INPUT usage fields
+      (`input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`) were present and were
+      non-negative ints in the raw usage dict; False when any was missing/invalid. `output_tokens`
+      validity is not part of this flag. Keep the existing `_int` zero-coercion for the token fields
+      themselves (so token totals are unchanged).
+    - Add the flag in `_record(...)`.
+
+2c. `producers/claude_code/cc_events.py`
+    - When `record.usage_valid`, set `complexity = input_size_tier(...)` and, if it is not None, set
+      `complexity_method = METHOD`. When `record.usage_valid` is False, set neither field.
+    - Add "complexity" and "complexity_method" to `ALLOWED_FIELDS`.
+
+=== WORKSTREAM 3 — backend storage, ingest, task derivation ===
+
+3a. `models.py` — `TokenEvent` gains nullable `agent: Optional[str] = Field(default=None, max_length=64)`.
+    Add it at the END of the model so fresh/upgraded column order stays predictable.
+
+3b. `migrations.py`
+    - `LATEST_SCHEMA_VERSION = 13`.
+    - New `async def _m13(conn)`:
+        * `await _add_columns(conn, "token_events", {"agent": "VARCHAR(64)"})`
+        * create index `ix_token_events_call_time_agent`:
+            ON token_events (COALESCE(occurred_at, recorded_at), agent, complexity_method, complexity, model)
+            WHERE event_type = 'llm_request'
+          (`CREATE INDEX IF NOT EXISTS`)
+        * bump the export revision in the SAME migration transaction:
+            `UPDATE export_state SET revision = revision + 1 WHERE id = 1`
+    - Register `(13, _m13)` in `MIGRATIONS`. Idempotent: fresh DBs are created from model metadata first,
+      then migrations run — use IF NOT EXISTS / the existing helper everywhere.
+
+3c. `scripts/rollback_v13.sql` (new) and `scripts/rollback_schema.py`
+    - `rollback_v13.sql`:
+        DROP INDEX IF EXISTS ix_token_events_call_time_agent;
+        ALTER TABLE token_events DROP COLUMN agent;
+        UPDATE export_state SET revision = revision + 1 WHERE id = 1;
+        DELETE FROM schema_migrations WHERE version = 13;
+    - Register `STEPS[13] = ("rollback_v13.sql", 12)` and whatever `APP_FOR_VERSION[12]` entry the runner's
+      existing pattern needs. Read the file first and follow its exact existing shape.
+
+3d. `routes/events.py`
+    - `EventIn` gains `agent: Optional[str] = Field(default=None, max_length=64)`.
+    - Add a strict backend validator `_clean_agent(value)` returning Optional[str]:
+        * None/"" -> None
+        * must be a str, <= 64 chars
+        * accepted shapes: exactly "main"/"custom"/"unknown"; a `SAFE_AGENT_RE` match (including the
+          `<plugin>:<agent>` form); or `a-` + 16 lowercase hex chars
+        * anything else -> None (NEVER raise, NEVER echo the input in an error)
+    - Apply `agent=_clean_agent(body.agent)` in the `TokenEvent(...)` construction.
+    - Do not add a reserved TAG key for agent, and do not touch the tag normalization.
+
+3e. `task_store.py`
+    - `APPROVED_METHODS = frozenset({"request-shape-v1", "cc-input-size-v1"})`.
+    - `start_complexity_candidate(...)` must RETURN THE ACTUAL resolved method name, not the hard-coded
+      string. Fix it: resolve the method first; if it is in `APPROVED_METHODS`, return THAT method;
+      else None. (Today it wrongly returns "request-shape-v1" for any approved method — that would mislabel
+      every CC task.)
+
+=== WORKSTREAM 4 — read API and export ===
+
+4a. `routes/tasks.py` — task list/detail builders already expose start-complexity fields. Add derived
+    agent fields, computed from the task's counted llm events (never from the parent task):
+      "agent": single distinct non-null agent value, else None
+      "agent_conflict": true when two or more distinct non-null agent values exist
+      "agent_unavailable_calls": count of the task's counted llm events with a null agent
+    Use the same counted-event predicate the jobs/analytics code uses (exclude the evaluator project/role
+    pair and `attribution_invalid`).
+
+4b. `routes/analytics.py` — NEW endpoint `GET /api/analytics/agents`:
+    Query params:
+      from (required, ISO-8601 with timezone, normalized to UTC, inclusive)
+      to (required, exclusive, must be > from, span <= 92 days)
+      project (optional, exact normalized name)
+      runtime (optional, repeatable, members of RUNTIMES)
+      agent (optional, repeatable, sanitized label)
+      agent_missing (optional bool; selects null agent; mutually exclusive with agent)
+      method (optional, repeatable, registered method names)
+      complexity (optional, repeatable int 1..5)
+      include_unscored (bool, default true)
+      model (optional, repeatable)
+    Bounds: <= 100 values per repeated filter; <= 20000 returned cells -> static 413 `result_too_large`
+    (never silently truncate). Static error messages that never echo a raw value.
+    Semantics:
+      * Count stored llm events (NOT transcript lines; never join tasks multiplicatively).
+      * Exclude the evaluator project/role pair and `attribution_invalid` (reuse the jobs predicate shape).
+      * Keep unpriced calls and null agent/complexity by default.
+      * Time basis `COALESCE(occurred_at, recorded_at)`, UTC calendar day.
+      * Cell key: runtime x agent x complexity_method x complexity x model x day. Method and runtime stay
+        in the key even when not filtered.
+      * One consistent read snapshot.
+    Response: `contract_version: 1`, `period {from,to}`, `time_basis`, `tier_source`,
+      `task_count_semantics`, `methods`, `coverage {agent_unavailable_calls, agent_unknown_calls,
+      agent_custom_calls, complexity_unscored_calls}`, `totals {...}`, `cells [...]`, `complete`.
+      Each cell and the totals carry: calls, tasks (distinct contributing tasks), calls_without_task,
+      prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens, priced_calls,
+      unpriced_calls, estimated_calls, priced_cost_usd, estimated_cost_usd, cost_complete, latency_calls,
+      avg_process_time_ms, ttft_calls, avg_ttft_ms.
+      `priced_cost_usd` is NULL when there are no priced calls (unknown must never read as zero);
+      `cost_complete` true only when every contributing call is priced. `avg_*` NULL with a denominator
+      when no value is known. Top-level `tasks` is a GLOBAL distinct count, never the sum of cells.
+    Also add an OPTIONAL `method` filter to the existing complexity endpoints, WITHOUT changing their
+      current response shapes or defaults (default stays `request-shape-v1` where it is today).
+
+4c. `routes/export.py`
+    - `EXPORT_FIELDS["events"]` gains `"agent"`.
+    - `EXPORT_FIELDS["tasks"]` gains `"agent"`, `"agent_conflict"`, `"agent_unavailable_calls"`,
+      `"start_complexity"`, `"start_complexity_method"`.
+    - `COMPLEXITY_METHODS = ("request-shape-v1", "cc-input-size-v1")` (emission already only emits an
+      enumerated method; unknown methods stay omitted).
+    - Exported task agent / start-complexity fields must be derived from SNAPSHOT events
+      (`ingest_seq <= as_of`), never from unrestricted live queries. Apply the same earliest-eligible
+      start-complexity rule within the snapshot.
+    - Do NOT change `EXPORT_FIELDS["jobs"]`.
+
+=== WORKSTREAM 5 — tests and docs ===
+
+5a. Tests (add or extend; follow the existing file style and fixtures):
+    `tests/test_cc_agent.py` (new): sanitize() table — main; a verified built-in passes; default policy
+      turns a custom name into a pseudonym; allowlist + safe shape passes; safe shape WITHOUT allowlist
+      becomes a pseudonym; reserved collision ("main") as a source value becomes a pseudonym; oversized and
+      non-string -> unknown; sidecar read returns agentType and returns None on missing/invalid/oversized;
+      pseudonym is stable and starts with "a-".
+    `tests/test_cc_state_client.py` (extend): the agent ctx block round-trips; a malformed agent block is
+      dropped while the rest of ctx survives; old state without agent keys still loads.
+    `tests/test_cc_events.py` (extend): a main event carries agent="main"; a subagent event carries its
+      sanitized agent; a build_event with agent=None has NO agent key; complexity + method appear only for
+      valid usage; the ALLOWED_FIELDS filter still excludes a raw agent id.
+    `tests/test_cc_hook.py` (extend): a SubagentStop run binds its own agent and does NOT leak it to the
+      main transcript; a drained subagent with no stored binding uses the sidecar; a drained subagent with
+      neither -> "unknown"; the main transcript still gets "main"; a truncation reset clears the old
+      binding. Reuse the existing subprocess/hook harness.
+    `tests/test_cc_complexity.py` (new): every boundary immediately below/at/above each threshold; all five
+      tiers; cache-inclusive input; output tokens do not change the tier; malformed input -> None.
+    `tests/test_cc_stdlib.py` (extend if needed): the new modules import with stdlib only.
+    `tests/test_cc_privacy.py` (new): byte-level canaries — a path-shaped, URL-shaped, email-shaped, dotted
+      hostname, and single-label-hostname agent name must be ABSENT from the POST body bytes and the state
+      file bytes; assert the sanitized replacement is present instead.
+    Backend: `tests/test_agent_ingest.py` (new) — valid agent shapes stored; invalid shapes become None and
+      the event is still accepted; `_clean_agent` never echoes input.
+    `tests/test_migration_v13.py` (new) — fresh vs migrated parity; the column and index exist; the export
+      revision was bumped once; the rollback runner applies and reverses cleanly.
+    `tests/test_agents_analytics.py` (new) — per-cell grouping; global distinct task count is not the sum
+      of cells; unknown agent/complexity rows are retained; all-unpriced -> `priced_cost_usd is None` and
+      `unpriced_calls == calls`; missing latency -> `avg_process_time_ms is None`; evaluator and
+      `attribution_invalid` rows excluded; the cell bound returns 413.
+    Extend `tests/test_task_ingest.py` — a CC task stores `start_complexity_method == "cc-input-size-v1"`,
+      an earlier-arriving event still wins, a tool event cannot set a start.
+    Extend `tests/test_export_contract.py` / `tests/test_export_pagination.py` — the new fields are in the
+      allowlists; the new method is emitted; task agent fields are snapshot-isolated.
+
+5b. Docs — update exactly these, in the existing style:
+    `README.md` (agent availability, the new method, the endpoint, schema v13, deploy-onward coverage),
+    `AGENTS.md` (Complexity section names both methods and states they are not comparable; module map rows
+      for the new producer modules; gotcha: agent is a column, not a tag; task agent is derived),
+    `CLAUDE.md` (Critical Technical Patterns: agent column + method list; add a Recurring Problem entry for
+      "CC agent label resolves to unknown after a backlog/resume drain"),
+    `ARCHITECTURE.md` (run-local agent resolution, event column + task derivation, the read contract),
+    `CHANGELOG.md` (under [Unreleased]: the data-layer feature, explicitly not the dashboard tab),
+    `producers/claude_code/README.md` (replace "agent names are never sent" with the exact gated policy,
+      the new config keys, and the "unknown on unverifiable drains" limitation),
+    `docs/export-contract-v1.md` (the new fields and the extended method value set; adding a field is not
+      breaking, an unknown method is omitted),
+    NEW `docs/adr/006-agent-identity-and-cc-complexity.md` (record: label vs run identity; source
+      precedence binding->hook->sidecar->unknown; default-deny custom names with the pseudonym rule; the
+      event column instead of a tag and derived task fields; the separate numeric method and its
+      non-comparability with request-shape-v1; deploy-onward coverage).
+    Do NOT claim the Agents dashboard exists. Do NOT claim named labels for every run.
+
+RUN THE TESTS
+- Run the backend suite the repo uses and make it pass: `.venv/bin/python -m pytest -q` if a venv exists,
+  otherwise `python3 -m pytest -q`. Also run `python3 -m py_compile` over the changed python files.
+- Fix what you break. If a pre-existing test fails for an unrelated reason, leave it alone and say so.
+- Do NOT weaken an assertion to make it pass.
+
+WHEN DONE
+- Do NOT commit, do NOT push.
+- Run `git add -A` so untracked new files are staged, then print `git diff --cached --stat` and a short
+  plain-English summary of what you changed and any test you could not make pass.

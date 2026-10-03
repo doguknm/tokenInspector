@@ -30,6 +30,7 @@ if __name__ == "__main__":
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 try:
+    import cc_agent  # noqa: E402
     import cc_attribution  # noqa: E402
     import cc_client  # noqa: E402
     import cc_config  # noqa: E402
@@ -79,6 +80,24 @@ def _is_subagent(path: str) -> bool:
     return p.parent.name == "subagents" and p.stem.startswith("agent-")
 
 
+_AGENT_KEYS = ("agent", "agent_source", "agent_run_key", "agent_policy_version")
+
+
+def _without_agent(ctx: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in ctx.items() if key not in _AGENT_KEYS}
+
+
+def _agent_block(cfg: cc_config.Config, path: str, source: str, value: Any = None) -> dict[str, Any]:
+    subagent = _is_subagent(path)
+    run_key = cc_events.pseudonym(Path(path).stem[len("agent-"):]) if subagent else cc_state.key_for(path)
+    if source == "main":
+        label = "main"
+    else:
+        label = cc_agent.sanitize(value, mode=cfg.agent_name_mode, allowlist=cfg.agent_name_allowlist,
+                                  local_names=cc_config.local_names())
+    return {"agent": label, "agent_source": source, "agent_run_key": run_key, "agent_policy_version": 1}
+
+
 def process_file(run: _Run, path: str, *, ctx: Optional[dict[str, Any]] = None, max_windows: int = 0) -> None:
     """Send the final records of one transcript, checkpointing after every acknowledged batch.
     `ctx` None = use the context stored in the file's state (drain); skip the file without one."""
@@ -99,16 +118,36 @@ def process_file(run: _Run, path: str, *, ctx: Optional[dict[str, Any]] = None, 
             if ctx is None:
                 return
         offset, turn = 0, None
+        same_file = False
+        reset = False
         if state is not None:
             offset, turn = state["offset"], state["turn_uuid"]
             same_file = state["file_id"] == file_id or (st.st_ino == 0 and state["file_id"][1] == 0)
             if st.st_size < offset or not same_file:
                 offset, turn = 0, None  # shortened or replaced: re-send is safe (idempotent insert)
+                reset = True
                 run.counters["truncation_resets"] += 1
-                cc_state.save(run.cfg.state_dir, key, offset=0, turn=None, file_id=file_id, pending=True,
-                              ctx=ctx, reset=True)
         subagent = _is_subagent(path)
         agent_fallback = Path(path).stem[len("agent-"):] if subagent else None
+        expected_run_key = cc_events.pseudonym(agent_fallback) if subagent else key
+        supplied = ctx if ctx.get("agent_run_key") == expected_run_key else None
+        stored = state.get("ctx") if state and same_file and not reset else None
+        bound = stored if stored and stored.get("agent_run_key") == expected_run_key else None
+        base = _without_agent(ctx)
+        if bound is not None:
+            resolved = bound
+        elif supplied is not None:
+            resolved = supplied
+        elif subagent:
+            sidecar = cc_agent.read_sidecar_agent_type(path)
+            source = "sidecar" if sidecar is not None else "unknown"
+            resolved = _agent_block(run.cfg, path, source, sidecar)
+        else:
+            resolved = _agent_block(run.cfg, path, "main")
+        ctx = dict(base, **{name: resolved[name] for name in _AGENT_KEYS})
+        if state is not None and (st.st_size < state["offset"] or not same_file):
+            cc_state.save(run.cfg.state_dir, key, offset=0, turn=None, file_id=file_id, pending=True,
+                          ctx=ctx, reset=True)
 
         cursor = [offset, turn]
 
@@ -127,7 +166,8 @@ def process_file(run: _Run, path: str, *, ctx: Optional[dict[str, Any]] = None, 
             pairs = []
             for record in win.records:
                 event = cc_events.build_event(record, runtime=run.runtime, project=ctx["project"],
-                                              project_source=ctx["project_source"], job=ctx["job"], subagent=subagent)
+                                              project_source=ctx["project_source"], job=ctx["job"], subagent=subagent,
+                                              agent=ctx["agent"])
                 if event is None:
                     run.counters["skipped_records"] += 1
                 else:
@@ -196,7 +236,11 @@ def _drain(run: _Run, transcript: str, own_ctx: dict[str, Any], done: set[str]) 
                 continue
         elif state is not None:
             try:
-                if os.stat(path).st_size <= state["offset"] and not state["pending"]:
+                stat = os.stat(path)
+                same_file = state["file_id"] == [stat.st_dev, stat.st_ino] or (
+                    stat.st_ino == 0 and state["file_id"][1] == 0)
+                reset_needed = stat.st_size < state["offset"] or not same_file
+                if not reset_needed and stat.st_size <= state["offset"] and not state["pending"]:
                     continue
             except OSError:
                 continue
@@ -220,15 +264,16 @@ def _run(start: float, stdin: BinaryIO) -> Counter:
     project, source = cc_attribution.resolve(data.get("cwd"), cfg.aliases)
     ctx = {"project": project, "project_source": source, "job": cc_config.job_tags()}
     run = _Run(start, cfg, runtime, ctx)
-    targets = []
+    targets: list[tuple[str, dict[str, Any]]] = []
     agent = data.get("agent_transcript_path")
     if data.get("hook_event_name") == "SubagentStop" and isinstance(agent, str) and agent:
-        targets.append(agent)
-    targets.append(transcript)
+        raw_type = data.get("agent_type")
+        targets.append((agent, dict(ctx, **_agent_block(cfg, agent, "hook", raw_type))))
+    targets.append((transcript, dict(ctx, **_agent_block(cfg, transcript, "main"))))
     done: set[str] = set()
-    for target in targets:
+    for target, target_ctx in targets:
         done.add(cc_state.key_for(target))
-        process_file(run, target, ctx=ctx)
+        process_file(run, target, ctx=target_ctx)
     _drain(run, transcript, ctx, done)
     cc_state.bump_counters(cfg.state_dir, run.counters)
     return run.counters

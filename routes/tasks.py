@@ -86,7 +86,12 @@ async def _aggregates(session: AsyncSession, rows: list[dict]) -> dict[str, dict
         "COALESCE(SUM(CASE WHEN event_type = 'llm_request' AND cost_status IN ('partial', 'estimated', 'legacy') "
         "THEN estimated_cost_usd END), 0) AS estimated_cost, "
         "SUM(event_type = 'llm_request' AND cost_status = 'unpriced') AS unpriced_count "
+        ", COUNT(DISTINCT CASE WHEN event_type = 'llm_request' THEN agent END) AS agent_count, "
+        "MIN(CASE WHEN event_type = 'llm_request' THEN agent END) AS agent, "
+        "SUM(event_type = 'llm_request' AND agent IS NULL) AS agent_unavailable_calls "
         "FROM token_events WHERE event_type <> 'session' "
+        "AND NOT (project_name = 'token-inspector' AND COALESCE(role, '') = 'evaluator') "
+        "AND COALESCE(json_extract(tags_json, '$.attribution_invalid'), 0) = 0 "
         f"AND (project_name, COALESCE(session_id, ''), turn_id) IN (VALUES {', '.join(placeholders)}) "
         "GROUP BY project_name, s, turn_id"
     )
@@ -187,6 +192,9 @@ async def build_items(session: AsyncSession, rows: list[dict]) -> list[dict]:
                 "unpriced_count": int(agg.get("unpriced_count") or 0),
                 "start_complexity": row["start_complexity"],
                 "start_complexity_method": row["start_complexity_method"],
+                "agent": agg.get("agent") if int(agg.get("agent_count") or 0) == 1 else None,
+                "agent_conflict": int(agg.get("agent_count") or 0) >= 2,
+                "agent_unavailable_calls": int(agg.get("agent_unavailable_calls") or 0),
                 "prompt_state": state,
                 "has_prompt": state == "retained",
                 "prompt_purged": bool(row["prompt_purged_at"]),

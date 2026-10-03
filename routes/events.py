@@ -28,6 +28,8 @@ _PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _SECRET_TAG_RE = re.compile(r"(key|token|secret|password|auth|credential|bearer)", re.I)
 _TRUE = {"1", "true", "yes", "on"}
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.:\-/]{1,128}$")
+_SAFE_AGENT_RE = re.compile(r"^(?:[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$")
+_AGENT_PSEUDONYM_RE = re.compile(r"^a-[0-9a-f]{16}$")
 # Tag byte cap: measured worst-case plugin tags (O9 J2, status.md Verification Log) before raising it.
 TAG_BYTES_MAX = 1024
 
@@ -131,6 +133,7 @@ class EventIn(BaseModel):
     prompt_text: Optional[str] = Field(default=None, max_length=3000)
     complexity: Optional[int] = Field(default=None, ge=1, le=5)
     complexity_method: Optional[str] = Field(default=None, max_length=32)
+    agent: Optional[str] = Field(default=None, max_length=64)
 
     # Task fields (task = one Hermes turn; the parent is identified by its session + turn).
     task_hierarchy: Optional[Literal["root", "child", "unknown"]] = None
@@ -191,6 +194,11 @@ class EventIn(BaseModel):
             return value.strip().lower()
         return None
 
+    @field_validator("agent", mode="before")
+    @classmethod
+    def validate_agent(cls, value: Any) -> Optional[str]:
+        return _clean_agent(value)
+
     @field_validator("request_tool_names")
     @classmethod
     def validate_tool_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
@@ -214,6 +222,17 @@ def _project_name(value: str) -> str:
             detail="X-Project-Name must match ^[a-z0-9][a-z0-9._-]{0,63}$",
         )
     return normalized
+
+
+def _clean_agent(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or len(value) > 64:
+        return None
+    if (value in ("main", "custom", "unknown") or _SAFE_AGENT_RE.fullmatch(value)
+            or _AGENT_PSEUDONYM_RE.fullmatch(value)):
+        return value
+    return None
 
 
 def _clean_tags(tags: dict[str, Any]) -> str | None:
@@ -367,6 +386,7 @@ async def _prepare_event(body: EventIn, project_name: str, session: AsyncSession
         request_tool_names_json=(
             json.dumps(body.request_tool_names, separators=(",", ":")) if body.request_tool_names else None
         ),
+        agent=_clean_agent(body.agent),
     )
 
 

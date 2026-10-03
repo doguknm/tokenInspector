@@ -57,6 +57,50 @@ def transcript(tmp_path, name="sess", calls=2) -> Transcript:
 # --- state -------------------------------------------------------------------------------------------------
 
 
+def test_agent_context_round_trip_and_malformed_block_drop(cc, tmp_path):
+    st = cc["cc_state"]
+    directory = tmp_path / "state"
+    directory.mkdir()
+    key = "1" * 32
+    base = {"project": "proj", "project_source": "fallback", "job": {}}
+    agent = {"agent": "main", "agent_source": "main", "agent_run_key": "2" * 32,
+             "agent_policy_version": 1}
+    assert st.save(directory, key, offset=1, turn=None, file_id=[1, 2], pending=False,
+                   ctx={**base, **agent})
+    assert st.load(directory, key)["ctx"] == {**base, **agent}
+    for offset, label in enumerate(("custom", "unknown"), 2):
+        structural = dict(agent, agent=label, agent_source="unknown")
+        assert st.save(directory, key, offset=offset, turn=None, file_id=[1, 2], pending=False,
+                       ctx={**base, **structural})
+        assert st.load(directory, key)["ctx"] == {**base, **structural}
+    assert st.save(directory, key, offset=4, turn=None, file_id=[1, 2], pending=False,
+                   ctx={**base, **agent, "agent_run_key": "raw-id"})
+    assert st.load(directory, key)["ctx"] == base
+    assert st.save(directory, key, offset=5, turn=None, file_id=[1, 2], pending=False, ctx=base)
+    assert st.load(directory, key)["ctx"] == base
+
+
+def test_state_load_reapplies_revoked_agent_name_policy(cc, tmp_path, monkeypatch):
+    st = cc["cc_state"]
+    agent = cc["cc_agent"]
+    directory = tmp_path / "state"
+    directory.mkdir()
+    key = "3" * 32
+    raw_name = "operator-agent"
+    ctx = {"project": "proj", "project_source": "fallback", "job": {}, "agent": raw_name,
+           "agent_source": "sidecar", "agent_run_key": "4" * 32, "agent_policy_version": 1}
+    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_MODE", "allowlist")
+    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", json.dumps([raw_name]))
+    assert st.save(directory, key, offset=1, turn=None, file_id=[1, 2], pending=False, ctx=ctx)
+    assert raw_name.encode() in (directory / f"{key}.json").read_bytes()
+
+    monkeypatch.setenv("TOKEN_INSPECTOR_AGENT_NAME_MODE", "deny")
+    loaded = st.load(directory, key)
+    assert loaded["ctx"]["agent"] == agent.pseudonym(raw_name)
+    assert st.save(directory, key, offset=2, turn=None, file_id=[1, 2], pending=False, ctx=loaded["ctx"])
+    assert raw_name.encode() not in (directory / f"{key}.json").read_bytes()
+
+
 def test_state_holds_only_offsets_and_ids(cc, tmp_path, monkeypatch):
     srv = FakeServer()
     monkeypatch.setenv("TOKEN_INSPECTOR_URL", srv.url)
@@ -71,7 +115,8 @@ def test_state_holds_only_offsets_and_ids(cc, tmp_path, monkeypatch):
     assert len(states) == 1 and re.fullmatch(r"[0-9a-f]{32}\.json", states[0].name)
     data = json.loads(states[0].read_bytes())
     assert set(data) <= {"offset", "turn_uuid", "file_id", "pending", "updated_at", "ctx"}
-    assert set(data["ctx"]) == {"project", "project_source", "job"}
+    assert set(data["ctx"]) == {"project", "project_source", "job", "agent", "agent_source",
+                                "agent_run_key", "agent_policy_version"}
     for path in files:
         raw = path.read_bytes()
         assert TOKEN.encode() not in raw and b"proj" not in raw.replace(b'"project', b"")

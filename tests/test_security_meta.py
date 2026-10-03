@@ -60,7 +60,7 @@ async def test_meta_preflight_with_flags_off_and_valid_config(client, monkeypatc
     features.refresh()
     body = (await client.get("/api/meta")).json()
     assert body == {
-        "schema_version": 12,
+        "schema_version": 13,
         "task_prompt_capture": False,
         "task_prompt_capture_disabled_reason": "not_enabled",
         "jev_enabled": False,

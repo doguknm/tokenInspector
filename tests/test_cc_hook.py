@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_support import (CANARY_HOST, CANARY_PATH_POSIX, CANARY_PATH_WIN, HOOK, PRODUCER_DIR, FakeServer, Transcript, canaries,
+from cc_support import (CANARY_AGENT, CANARY_HOST, CANARY_PATH_POSIX, CANARY_PATH_WIN, HOOK, PRODUCER_DIR, FakeServer, Transcript, canaries,
                         make_repo, modules, run_hook_subprocess, set_home, stdin_bytes, subagent_path)
 
 
@@ -154,7 +154,58 @@ def test_payload_sentinel_bytes(cc, server, tmp_path):
         assert set(event) <= ce.ALLOWED_FIELDS and set(event["tags"]) <= ce.TAG_KEYS
         assert "request_tool_names" not in event and "tool_call_count" in event
     root = next(e for e in server.events() if e["task_hierarchy"] == "root")
+    child = next(e for e in server.events() if e["task_hierarchy"] == "child")
     assert root["tool_call_count"] == 2
+    assert root["agent"] == "main"
+    assert child["agent"] == cc["cc_agent"].pseudonym("zz-canary-agent")
+
+
+def test_drain_resolves_sidecar_or_unknown_per_subagent(cc, server, tmp_path):
+    main = session(tmp_path, "44444444-4444-4444-4444-444444444444")
+    parent = main.prompt()
+    main.call("root-m", "root-r")
+    main.flush()
+    sidecar_sub = Transcript(subagent_path(main.path, "side"), main.session_id, agent_id="side")
+    sidecar_sub.prompt(parent)
+    sidecar_sub.call("side-m", "side-r")
+    sidecar_sub.flush()
+    sidecar_sub.path.with_suffix(".meta.json").write_text(json.dumps({"agentType": "fork"}), encoding="utf-8")
+    unknown_sub = Transcript(subagent_path(main.path, "none"), main.session_id, agent_id="none")
+    unknown_sub.prompt(parent)
+    unknown_sub.call("none-m", "none-r")
+    unknown_sub.flush()
+
+    run(cc, "Stop", main.path, str(tmp_path))
+    events = {event["client_event_id"]: event for event in server.events()}
+    assert next(event for event in events.values() if event["task_hierarchy"] == "root")["agent"] == "main"
+    assert events[cc["cc_events"].client_event_id("side-m", "side-r")]["agent"] == "fork"
+    assert events[cc["cc_events"].client_event_id("none-m", "none-r")]["agent"] == "unknown"
+
+
+def test_subagent_truncation_clears_old_agent_binding(cc, server, tmp_path):
+    main = session(tmp_path, "55555555-5555-5555-5555-555555555555")
+    parent = main.prompt()
+    main.call("main-old", "main-old-r")
+    main.flush()
+    path = subagent_path(main.path, "reset")
+    sub = Transcript(path, main.session_id, agent_id="reset")
+    sub.prompt(parent)
+    for index in range(5):
+        sub.call(f"old-{index}", f"old-r-{index}")
+    sub.flush()
+    run(cc, "SubagentStop", main.path, str(tmp_path), agent_transcript=path)
+    assert state(cc, path)["ctx"]["agent"] == cc["cc_agent"].pseudonym(CANARY_AGENT)
+
+    path.write_bytes(b"")
+    replacement = Transcript(path, main.session_id, agent_id="reset")
+    replacement.prompt(parent)
+    replacement.call("new-after-reset", "new-after-reset-r")
+    replacement.flush()
+    path.with_suffix(".meta.json").write_text(json.dumps({"agentType": "fork"}), encoding="utf-8")
+    run(cc, "Stop", main.path, str(tmp_path))
+    event_id = cc["cc_events"].client_event_id("new-after-reset", "new-after-reset-r")
+    assert next(event for event in server.events() if event["client_event_id"] == event_id)["agent"] == "fork"
+    assert state(cc, path)["ctx"]["agent"] == "fork"
 
 
 def test_payload_value_canaries(cc, server, tmp_path, monkeypatch):

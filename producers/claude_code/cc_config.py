@@ -32,6 +32,8 @@ class Config:
     token: Optional[str] = None
     aliases: dict[str, str] = field(default_factory=dict)
     state_dir: Path = Path(".")
+    agent_name_mode: str = "deny"
+    agent_name_allowlist: tuple = ()
 
 
 def runtime() -> Optional[str]:
@@ -72,6 +74,15 @@ def _aliases(raw: Any) -> dict[str, str]:
     return out
 
 
+def _agent_allowlist(raw: Any) -> tuple:
+    return tuple(value for value in raw if isinstance(value, str)) if isinstance(raw, list) else ()
+
+
+def local_names() -> set[str]:
+    import cc_attribution
+    return cc_attribution.local_names()
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         data = json.loads(path.read_bytes().decode("utf-8"))
@@ -104,11 +115,22 @@ def load() -> Config:
             raw_aliases = json.loads(env_aliases)
         except Exception:
             raw_aliases = {}
+    mode = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_MODE", "").strip() or file_cfg.get("agent_name_mode")
+    mode = mode if mode in ("deny", "allowlist") else "deny"
+    raw_agent_allowlist: Any = file_cfg.get("agent_name_allowlist")
+    env_agent_allowlist = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", "").strip()
+    if env_agent_allowlist:
+        try:
+            raw_agent_allowlist = json.loads(env_agent_allowlist)
+        except Exception:
+            raw_agent_allowlist = []
     return Config(
         url=str(url).rstrip("/"),
         token=_token(file_cfg),
         aliases=_aliases(raw_aliases),
         state_dir=state_dir(),
+        agent_name_mode=mode,
+        agent_name_allowlist=_agent_allowlist(raw_agent_allowlist),
     )
 
 

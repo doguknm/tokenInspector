@@ -128,11 +128,11 @@ async def test_rollback_runner_refuses_unknown_source_and_old_sqlite(tmp_path, m
     path = tmp_path / "v11.db"
     await database.init_db(str(path))
     with closing(sqlite3.connect(path)) as conn:
-        conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (13, 'x')")
+        conn.execute("INSERT INTO schema_migrations(version, applied_at) VALUES (14, 'x')")
         conn.commit()
     columns = _columns(path, "tasks")
-    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1  # no step from 13: refused
-    assert _columns(path, "tasks") == columns and _version(path) == 13
+    assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1  # no step from 14: refused
+    assert _columns(path, "tasks") == columns and _version(path) == 14
     monkeypatch.setattr(rollback_schema.sqlite3, "sqlite_version_info", (3, 34, 1))
     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 1
 

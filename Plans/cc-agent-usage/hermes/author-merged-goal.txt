@@ -1,0 +1,107 @@
+TASK — compose one prompt, return only that prompt
+
+You are a prompt editor. Your single deliverable is ONE prompt (a `/goal` text) that a coding agent will
+later execute. Return only that prompt as your final answer, in a fenced code block, nothing else. Do not
+run tools, do not read the repository, do not add commentary.
+
+HARD CONSTRAINT: the prompt you write must be UNDER 4000 CHARACTERS (count them; verify before you answer).
+It must be self-contained, imperative, in normal English, and must not lose any rule listed below. Compress
+by merging and by removing repetition, never by dropping a rule.
+
+The prompt merges TWO things:
+(A) a GOAL for an "Agents" dashboard tab, and
+(B) the MUTATION-CHECK obligation that belongs to that goal's build checkpoint.
+
+=== SOURCE A — the goal (keep every rule) ===
+
+Goal: an "Agents" tab in the Token Inspector dashboard (backend repo tokenInspector, branch
+`feat/cc-agent-usage`, built on goal 1's data layer) for per-agent token usage analysis split by complexity
+tier and by token type.
+
+Precondition: goal 1 is done — `Plans\cc-agent-usage\status.md` has its "Contract for goal 2" section and
+that branch holds its commits. If that section is missing, stop and report; do not invent fields.
+
+Done when: the design + plan report is saved in `Plans\cc-agent-usage\hermes\` and its open decisions are
+answered by the user and recorded in status.md (Decisions, goal 2); the dashboard has a top nav tab
+"Agents" (next to Overview, Projects, Models, Complexity, Tasks, Jobs, Settings); the view uses only the
+endpoint(s)/fields of the goal 2 contract (a small read-only backend addition only if the plan proves one
+is missing, with tests); Playwright browser tests cover the view; every new display control has a mutation
+check; the Windows backend suite (incl. browser) and the hermes backend suite are green; docs are updated;
+commits are pushed to `hermes` (and `origin` if reachable). Nothing is deployed.
+
+Repos/live-hook rule: main Windows checkout `C:\Users\Bentego_Admin\Projects\tokenInspector` is LIVE (the
+hook runs the producer from it) — never switch its branch, never edit `producers/claude_code/` there. Work
+in the separate worktree `C:\Users\Bentego_Admin\Projects\tokenInspector-agents`; run suites with the main
+checkout's `.venv` python.
+
+Read first: CLAUDE.md, AGENTS.md (dashboard, consumer contract, Complexity), status.md (Decisions,
+"Contract for goal 2", Known Limitations), static/index.html + static/app.js (how the Complexity, Jobs and
+Tasks views are built: nav, filters, tables, Chart.js, latest-request-wins, closed error policy),
+tests/browser/ (conftest servers; test_complexity_view.py, test_jobs_view.py as patterns).
+
+The view must answer (the design may arrange it differently; every number states its unit and period):
+1. Filters: period, runtime, project, model, agent, complexity method; URL keeps filter state.
+2. KPI row: calls, tasks, total tokens (prompt / completion / cache read / cache creation shown separately,
+   never one silent sum), priced cost with the unpriced count beside it (never `$0` for unpriced), number of
+   agents seen, share of calls with no agent label.
+3. Sortable per-agent table: calls, tasks, tokens by type, averages per call and per task, priced cost +
+   unpriced count, cost per task, error rate, top model, low-sample mark.
+4. Complexity split: agent × tier (calls and tokens per tier; heatmap or stacked bars), method named; tasks
+   per tier by start complexity.
+5. Token-type split per agent: stacked bars prompt / completion / cache read / cache creation; cache-read
+   share.
+6. Trend: calls or tokens per day per agent (top N + "other").
+7. Drill-down for one agent: models, projects, tier distribution, main-thread vs subagent share, its jobs
+   (link to the Jobs view filter).
+8. Coverage note: agent and CC complexity exist only from goal 1's deploy date; earlier events show as "no
+   label"; mention the `hermes -z` exit window for hermes-agent rows.
+
+Checkpoints (3):
+CP1 — design and plan on hermes with `hermes chat --provider openai-codex --model gpt-6-astra` (read-only,
+one run, "PEGA unreachable", no hostnames/tokens/tailnet names/user paths): information architecture + text
+wireframe (desktop and narrow), chart choice per question with Chart.js (accessible colors, existing
+palette, no chart for a one-number answer), exact request per interaction (reuse goal 1's endpoint; any
+missing aggregation named with proof), states (loading, empty, partial coverage, error with a closed
+error-message policy), browser test list and mutation targets, open decisions with options and a
+recommendation. Report to `Plans\cc-agent-usage\hermes\cc-agents-tab-plan.md`, TAG `cc-agents-tab-plan`.
+Present decisions to the user; record the answers; build nothing before that. Checkpoint: commit, push.
+CP2 — build with the hermes default model, one code job (a second only if the first is incomplete): nav
+tab, view, requests, states, Playwright tests (module-scoped servers with their own seeded DB: several
+agents, all tiers, priced and unpriced models, a "no label" share, an empty range, an error response), no
+new dependency. Pull the diff, apply, run the browser tests, close small gaps. Checkpoint: Windows
+`.venv/Scripts/python.exe -m pytest -q` (incl. browser) and `-m browser` separately, `node --check
+static/app.js`, `py_compile`, `git diff --check`; hermes backend suite in a temp detached worktree (browser
+tests skip there); commit, push.
+CP3 — docs: README (Agents tab, what each number means, coverage note), AGENTS.md (module map, consumer
+contract), CHANGELOG, status.md (Verification Log, mutation table, Known Limitations, Open Items, deploy
+notes: frontend-only, ships with goal 1's deploy). Commit, push to `hermes` (and `origin` if reachable).
+
+Models/review/locked/rules: design with gpt-6-astra (read-only, detached, temp worktrees); build with the
+hermes default model via hermes.sh with NO model/provider; NO review round of any kind (a checkpoint = full
+regression + mutation checks + commit + push); on a model/provider error or HTTP 429 stop, report the error
+text, do not retry or switch model; no deploy, install, restart or settings.json change; privacy unchanged
+(pseudonymous agent labels only, no prompt text anywhere); hermes queue row + peer message before and after
+each hermes job; Windows OpenSSH; `python` on Windows, `python3` on hermes; Write for scripts; CRLF kept;
+replies in Turkish; last line `Hermes kullanıldı` / `Hermes kullanılmadı`; at a 95% weekly Claude limit
+finish the step, commit, report, stop.
+END: report decisions, the view (sections, requests), files and commits, test counts, mutation results and
+what the deploy needs; then `/caveman off` → `/sync-docs` → `/compress` → `/sync-memory`. Stop.
+
+=== SOURCE B — the mutation obligation (fold this in) ===
+
+Every NEW DISPLAY CONTROL the Agents view adds must get a mutation check (break the control → a named test
+goes red → restore), recorded in a mutation table in status.md. The runner must have an
+`if __name__ == "__main__":` guard, call subprocess with `encoding="utf-8", errors="replace"`, apply one
+mutation at a time, restore the original bytes in a `finally` block, and verify every original string is
+present again after each mutation; a survivor is a missing test, not something to fix by weakening an
+assertion. Controls to cover (adapt to what the plan actually builds): priced cost never shown as `$0` for
+unpriced calls; low-sample mark hidden; filter → request mapping wrong; empty state not shown; error state
+replaced by a silent blank; latest-request-wins removed (a slow old response overwrites a new one); the
+complexity method label dropped; tier/method dimensions pooled; cache-read share computed over the wrong
+denominator; per-cell task counts summed into the global total; unknown-agent/"no label" rows dropped.
+
+=== OUTPUT ===
+
+Return ONLY the merged prompt, under 4000 characters, in a fenced code block. It must read as one coherent
+`/goal` text whose CP2 checkpoint includes the mutation obligation. Verify the character count before
+answering.

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 import task_store
 
-LATEST_SCHEMA_VERSION = 12
+LATEST_SCHEMA_VERSION = 13
 Migration = Callable[[AsyncConnection], Awaitable[None]]
 
 
@@ -373,6 +373,19 @@ async def _m12(conn: AsyncConnection) -> None:
     )
 
 
+async def _m13(conn: AsyncConnection) -> None:
+    """Claude Code agent identity column and call-analysis index."""
+    await _add_columns(conn, "token_events", {"agent": "VARCHAR(64)"})
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_token_events_call_time_agent ON token_events "
+            "(COALESCE(occurred_at, recorded_at), agent, complexity_method, complexity, model) "
+            "WHERE event_type = 'llm_request'"
+        )
+    )
+    await conn.execute(text("UPDATE export_state SET revision = revision + 1 WHERE id = 1"))
+
+
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _m1),
     (2, _m2),
@@ -386,6 +399,7 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (10, _m10),
     (11, _m11),
     (12, _m12),
+    (13, _m13),
 ]
 
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select, text
@@ -11,6 +12,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from database import get_session
 from models import TokenEvent
 from project_inventory import discover_projects
+from routes.events import RUNTIMES, _clean_agent
 from routes.tasks import _completion
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
@@ -55,6 +57,73 @@ def _token_sum_columns():
 
 def _token_sums(row) -> dict:
     return {name: int(row[name] or 0) for name in _TOKEN_FIELDS}
+
+
+_AGENT_METHODS = ("request-shape-v1", "cc-input-size-v1")
+_ESTIMATED_COST = ("partial", "estimated", "legacy")
+AGENT_CELL_MAX = 20000
+
+
+def _iso(value: str) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+
+
+def _fmt(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _agent_bucket() -> dict[str, Any]:
+    return {"calls": 0, "tasks": set(), "calls_without_task": 0,
+            **dict.fromkeys(_TOKEN_FIELDS, 0), "priced_calls": 0, "unpriced_calls": 0,
+            "estimated_calls": 0, "priced_cost": 0.0, "estimated_cost": 0.0,
+            "latency_calls": 0, "latency_sum": 0, "ttft_calls": 0, "ttft_sum": 0}
+
+
+def _agent_add(bucket: dict, row, task_key) -> None:
+    bucket["calls"] += 1
+    if task_key is None:
+        bucket["calls_without_task"] += 1
+    else:
+        bucket["tasks"].add(task_key)
+    for name in _TOKEN_FIELDS:
+        bucket[name] += int(row[name] or 0)
+    status = row["cost_status"]
+    if status == "priced":
+        bucket["priced_calls"] += 1
+        bucket["priced_cost"] += float(row["estimated_cost_usd"] or 0)
+    elif status == "unpriced":
+        bucket["unpriced_calls"] += 1
+    elif status in _ESTIMATED_COST:
+        bucket["estimated_calls"] += 1
+        bucket["estimated_cost"] += float(row["estimated_cost_usd"] or 0)
+    if row["process_time_ms"] is not None:
+        bucket["latency_calls"] += 1
+        bucket["latency_sum"] += int(row["process_time_ms"])
+    if row["ttft_ms"] is not None:
+        bucket["ttft_calls"] += 1
+        bucket["ttft_sum"] += int(row["ttft_ms"])
+
+
+def _agent_finish(bucket: dict) -> dict[str, Any]:
+    priced = bucket["priced_calls"]
+    return {"calls": bucket["calls"], "tasks": len(bucket["tasks"]),
+            "calls_without_task": bucket["calls_without_task"],
+            **{name: bucket[name] for name in _TOKEN_FIELDS},
+            "priced_calls": priced, "unpriced_calls": bucket["unpriced_calls"],
+            "estimated_calls": bucket["estimated_calls"],
+            "priced_cost_usd": round(bucket["priced_cost"], 6) if priced else None,
+            "estimated_cost_usd": round(bucket["estimated_cost"], 6),
+            "cost_complete": bucket["calls"] > 0 and priced == bucket["calls"],
+            "latency_calls": bucket["latency_calls"],
+            "avg_process_time_ms": round(bucket["latency_sum"] / bucket["latency_calls"])
+            if bucket["latency_calls"] else None,
+            "ttft_calls": bucket["ttft_calls"],
+            "avg_ttft_ms": round(bucket["ttft_sum"] / bucket["ttft_calls"])
+            if bucket["ttft_calls"] else None}
 
 
 @router.get("/summary")
@@ -267,11 +336,112 @@ async def timeseries(
     ]
 
 
+@router.get("/agents")
+async def agents(
+    start: str = Query(alias="from"), end: str = Query(alias="to"), project: Optional[str] = None,
+    runtime: list[str] = Query(default=[]), agent: list[str] = Query(default=[]), agent_missing: bool = False,
+    method: list[str] = Query(default=[]), complexity: list[str] = Query(default=[]),
+    include_unscored: bool = True, model: list[str] = Query(default=[]),
+    session: AsyncSession = Depends(get_session),
+):
+    """Deploy-onward calls grouped by runtime, sanitized agent, method, tier, model and UTC day."""
+    start_dt, end_dt = _iso(start), _iso(end)
+    filters = (runtime, agent, method, complexity, model)
+    if (start_dt is None or end_dt is None or start_dt >= end_dt or end_dt - start_dt > timedelta(days=92)
+            or any(len(values) > 100 for values in filters) or (agent_missing and agent)):
+        raise HTTPException(status_code=400, detail="invalid_filter")
+    if project is not None and not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", project):
+        raise HTTPException(status_code=400, detail="invalid_filter")
+    if any(value not in RUNTIMES for value in runtime) or any(value not in _AGENT_METHODS for value in method):
+        raise HTTPException(status_code=400, detail="invalid_filter")
+    if any(_clean_agent(value) != value for value in agent):
+        raise HTTPException(status_code=400, detail="invalid_filter")
+    try:
+        tiers = [int(value) for value in complexity]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_filter") from None
+    if any(tier < 1 or tier > 5 for tier in tiers):
+        raise HTTPException(status_code=400, detail="invalid_filter")
+    ts = "COALESCE(e.occurred_at, e.recorded_at)"
+    runtime_sql = "COALESCE(json_extract(e.tags_json, '$.runtime'), 'hermes-agent')"
+    where = [f"{ts} >= :start", f"{ts} < :end", "e.event_type = 'llm_request'",
+             "NOT (e.project_name = 'token-inspector' AND COALESCE(e.role, '') = 'evaluator')",
+             "COALESCE(json_extract(e.tags_json, '$.attribution_invalid'), 0) = 0"]
+    params: dict[str, Any] = {"start": _fmt(start_dt), "end": _fmt(end_dt)}
+
+    def repeated(column: str, values: list, prefix: str) -> None:
+        if values:
+            names = []
+            for index, value in enumerate(values):
+                name = f"{prefix}{index}"
+                params[name] = value
+                names.append(":" + name)
+            where.append(f"{column} IN ({', '.join(names)})")
+
+    if project is not None:
+        where.append("e.project_name = :project")
+        params["project"] = project
+    repeated(runtime_sql, runtime, "r")
+    repeated("e.agent", agent, "a")
+    if agent_missing:
+        where.append("e.agent IS NULL")
+    repeated("e.complexity_method", method, "mth")
+    repeated("e.complexity", tiers, "c")
+    repeated("e.model", model, "mdl")
+    if not include_unscored:
+        where.append("e.complexity IS NOT NULL")
+    columns = ", ".join(["e.project_name", "e.session_id", "e.turn_id", "e.agent", "e.complexity_method",
+                         "e.complexity", "e.model", "e.cost_status", "e.estimated_cost_usd",
+                         "e.process_time_ms", "e.ttft_ms", *[f"e.{name}" for name in _TOKEN_FIELDS]])
+    rows = (await session.execute(text(
+        f"SELECT {columns}, {runtime_sql} AS runtime, {ts} AS ts FROM token_events e "
+        f"WHERE {' AND '.join(where)} ORDER BY e.rowid"
+    ), params)).mappings().all()
+    buckets: dict[tuple, dict] = {}
+    totals = _agent_bucket()
+    coverage = dict.fromkeys(("agent_unavailable_calls", "agent_unknown_calls", "agent_custom_calls",
+                              "complexity_unscored_calls"), 0)
+    methods, global_tasks = set(), set()
+    for row in rows:
+        key = (row["runtime"], row["agent"], row["complexity_method"], row["complexity"], row["model"], row["ts"][:10])
+        if key not in buckets and len(buckets) >= AGENT_CELL_MAX:
+            raise HTTPException(status_code=413, detail="result_too_large")
+        task_key = ((row["project_name"], row["session_id"] or "", row["turn_id"])
+                    if row["turn_id"] not in (None, "", "unknown", "session") else None)
+        if task_key is not None:
+            global_tasks.add(task_key)
+        _agent_add(buckets.setdefault(key, _agent_bucket()), row, task_key)
+        _agent_add(totals, row, task_key)
+        coverage["agent_unavailable_calls"] += row["agent"] is None
+        coverage["agent_unknown_calls"] += row["agent"] == "unknown"
+        coverage["agent_custom_calls"] += row["agent"] == "custom"
+        coverage["complexity_unscored_calls"] += row["complexity"] is None
+        if row["complexity_method"] is not None:
+            methods.add(row["complexity_method"])
+    cells = []
+    for key, bucket in buckets.items():
+        runtime_value, agent_value, method_value, tier, model_value, day = key
+        cells.append({"runtime": runtime_value, "agent": agent_value, "complexity_method": method_value,
+                      "complexity": tier, "model": model_value, "day": day, **_agent_finish(bucket)})
+    cells.sort(key=lambda item: tuple("" if item[name] is None else str(item[name]) for name in
+                                     ("day", "runtime", "agent", "complexity_method", "complexity", "model")))
+    total_item = _agent_finish(totals)
+    total_item["tasks"] = len(global_tasks)
+    return {"contract_version": 1, "period": {"from": _fmt(start_dt), "to": _fmt(end_dt)},
+            "time_basis": "COALESCE(occurred_at, recorded_at), UTC calendar day", "tier_source": "llm_call",
+            "task_count_semantics": "global distinct project/session/turn; cells count distinct contributors",
+            "methods": sorted(methods), "coverage": coverage, "totals": total_item, "cells": cells,
+            "complete": True}
+
+
 @router.get("/by-complexity")
-async def by_complexity(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def by_complexity(days: int = 30, project: Optional[str] = None, method: Optional[str] = None,
+                        session: AsyncSession = Depends(get_session)):
     conditions = [*_llm_filter(days), TokenEvent.complexity.is_not(None)]
     if project:
         conditions.append(TokenEvent.project_name == project)
+    if method:
+        conditions.append(TokenEvent.complexity_method == method)
     query = (
         select(
             TokenEvent.complexity,
@@ -303,7 +473,8 @@ async def by_complexity(days: int = 30, project: Optional[str] = None, session: 
 
 
 @router.get("/routing-recommendations")
-async def routing_recommendations(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def routing_recommendations(days: int = 30, project: Optional[str] = None, method: Optional[str] = None,
+                                  session: AsyncSession = Depends(get_session)):
     conditions = [
         *_llm_filter(days),
         TokenEvent.complexity.is_not(None),
@@ -312,6 +483,8 @@ async def routing_recommendations(days: int = 30, project: Optional[str] = None,
     ]
     if project:
         conditions.append(TokenEvent.project_name == project)
+    if method:
+        conditions.append(TokenEvent.complexity_method == method)
     query = (
         select(
             TokenEvent.role,
@@ -353,10 +526,13 @@ async def routing_recommendations(days: int = 30, project: Optional[str] = None,
 
 
 @router.get("/by-role-model-complexity")
-async def by_role_model_complexity(days: int = 30, project: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def by_role_model_complexity(days: int = 30, project: Optional[str] = None, method: Optional[str] = None,
+                                   session: AsyncSession = Depends(get_session)):
     conditions = [*_llm_filter(days), TokenEvent.complexity.is_not(None)]
     if project:
         conditions.append(TokenEvent.project_name == project)
+    if method:
+        conditions.append(TokenEvent.complexity_method == method)
     query = (
         select(
             TokenEvent.role,

@@ -137,6 +137,23 @@ Hermes turn (plugin 0c: task_hierarchy, parent session/turn, composition counts,
 - The evaluator is a separate trust boundary: the scrubbed prompt leaves the machine; every call is reserved in `evaluator_attempts` first; its own usage is a `token-inspector` event that is never scored.
 - The plugin spools undeliverable batches to disk (fsync, dead-letter) and never holds a prompt past capture time + 30 days.
 
+## Claude Code agent and complexity data (schema v13)
+
+Agent resolution is run-local and bound to each transcript cursor. A primary transcript is `main`; a
+`SubagentStop` binds its sanitized hook `agent_type`; a later drain reuses that binding, then tries only the
+bounded sibling sidecar's `agentType`, and otherwise uses `unknown`. A file-identity/reset mismatch clears the
+binding. Raw agent ids, names and transcript locations never enter state or events.
+
+The sanitized label is stored on each `token_events.agent` column, not in tags. Task list/detail and export
+derive agent, conflict and unavailable-call fields from that task's own counted snapshot calls. Claude Code
+complexity is `cc-input-size-v1`, a numeric input-plus-cache tier that is deliberately separate from and not
+comparable with Hermes `request-shape-v1`.
+
+`GET /api/analytics/agents` reads one bounded snapshot over `[from,to)`, grouping counted calls by UTC day,
+runtime, nullable agent, nullable method/tier and model. It retains unpriced and unscored calls, reports global
+distinct tasks separately from per-cell tasks, and fails with `result_too_large` instead of truncating. This is
+a read contract; there is no Agents dashboard tab in this change.
+
 ## Runtime State
 
 ```text

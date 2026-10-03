@@ -10,6 +10,11 @@ All notable user-visible and operational changes are documented here.
 
 ### Added
 
+- Schema v13 data layer (not an Agents dashboard tab): Claude Code emits privacy-gated per-run agent labels
+  and the separate `cc-input-size-v1` call tier; events store `agent`, tasks derive agent/conflict/missing and
+  method-qualified start complexity, export v1 adds snapshot-derived fields, and `GET /api/analytics/agents`
+  provides a bounded read contract. Coverage begins at deployment; named labels are not guaranteed.
+
 - Complexity view: tier × model comparison (calls, tasks, per-call and per-task token split, latency, TTFT, error rate, priced cost per task, completion counts, low-sample marks) with project/model/method/day filters, backed by the new `GET /api/analytics/complexity-matrix`; the demo seed now carries per-call tiers and two priced models.
 - Task telemetry (schema v10): one task per Hermes turn, derived at ingest and backfilled metadata-only, with deterministic start complexity, arrival-order-independent completion and hierarchy from subagent starts.
 - Tasks view and Tasks API (list, detail, blind labels), `/api/meta` feature gates and config preflight.

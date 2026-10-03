@@ -44,7 +44,10 @@ Production runs O9 since 2026-10-03 (backend `main` on the O9 branch head, schem
 - Requested model, resolved model, and pricing model remain distinct.
 - Unknown pricing is `unpriced/no_rule`; never represent it as free.
 - Task prompts and JEV are limited to projects on both allowlists (backend `TASK_PROMPT_ALLOWED_PROJECTS`, plugin `task_prompt_allowed_projects`; empty = off) and to proven root tasks; `-devir` hand-off clones are path-denied in the plugin.
-- Deterministic complexity uses `request-shape-v1` numeric metadata, not raw prompt semantics.
+- Deterministic complexity methods are `request-shape-v1` (Hermes request shape) and `cc-input-size-v1`
+  (Claude Code input plus cache tokens). They are method-qualified and not comparable tier-for-tier.
+- Sanitized agent identity is stored in nullable `token_events.agent`, never tags; task agent fields are
+  derived from counted calls and can report conflicts or unavailable calls.
 - Filesystem repository inventory and event-backed observed activity are different datasets.
 - The versioned export (`/api/export/v1/*`, schema v12) reads a snapshot by `token_events.ingest_seq`; any write that deletes or rewrites stored `token_events` rows must bump `export_state.revision` in the same transaction (AGENTS.md Gotchas, ADR-005).
 - Absolute workspace paths and complete Git remote URLs must not enter telemetry storage.
@@ -119,6 +122,11 @@ Never delete the production database to re-seed pricing. Use settings APIs, mode
 | Hermes producer plugin | `/home/dogukan/Projects/token_inspector` |
 
 ## Recurring Problems
+
+0. **CC agent label resolves to `unknown` after a backlog/resume drain**
+   - A stored run binding is authoritative. Without one, the producer reads only the bounded sibling
+     `agent-<id>.meta.json` `agentType`; if that evidence is absent or invalid, `unknown` is intentional.
+   - Do not infer a name from the transcript path, raw agent id, description, hostname or transcript content.
 
 1. **Phantom project attribution**
    - Check event `session_id`, `trace_id`, timestamp, and tags `project_source`/`project_confidence`.

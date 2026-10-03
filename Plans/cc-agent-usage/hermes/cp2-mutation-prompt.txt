@@ -1,0 +1,75 @@
+CP2 MUTATION CHECKS — Claude Code agent identity + cc-input-size-v1
+
+REPO: the Token Inspector backend checkout (branch `feat/cc-agent-usage`) at its CP2-integrated state.
+Your job is NOT to change product code. It is to write ONE mutation runner, run it, and report which
+mutations were caught and which survived. Leave the product code byte-for-byte unchanged when you finish
+(the runner restores every mutation; verify this).
+
+WHAT A MUTATION CHECK IS
+For each control below: introduce a small deliberate defect in the source, run the named test, confirm it
+goes RED (the assertion fails), then restore the exact original text. "Caught" = the test went red.
+"Survived" = the test stayed green even though the control was broken — that is a missing test, and you
+report it (do NOT fix the test).
+
+RUNNER REQUIREMENTS (all mandatory)
+- A single script (e.g. `/tmp/ccag_mut/mutate.py`), stdlib only, that has an `if __name__ == "__main__":`
+  guard so importing it never applies a mutation.
+- One mutation at a time. Apply by exact string replace; restore the ORIGINAL bytes in a `finally` block.
+- Windows-safe subprocess: `subprocess.run(..., encoding="utf-8", errors="replace")`.
+- After every mutation, re-read the file and assert the original string is present again before the next
+  one (restoration verified). At the end, run `git status --porcelain` and confirm no product source file
+  is modified (only the tests dir may be untouched too — the tree must be clean of your edits).
+- Run each mutation with the repo's venv python: `.venv/bin/python -m pytest -q <test>::<name>` (fall back
+  to `python3` if no venv). Use `-p no:cacheprovider` to avoid `.pyc` noise. Capture the exit code: non-zero
+  = caught.
+- Record for each mutation: id, target file, the one-line break description, the test id, caught/survived,
+  and (if caught) the failing assertion line from the pytest output.
+
+CONTROLS TO BREAK (one entry per row; adapt the exact break to the real code you read)
+Producer identity / privacy:
+- P1 main label generation removed -> test that asserts a main-thread event carries agent "main".
+- P2 label applied across targets (a SubagentStop's label leaks to a different transcript) -> the
+  run-key/binding isolation test.
+- P3 run-key mismatch check removed (a stale binding is reused) -> the mismatch test.
+- P4 default-deny bypass: `sanitize` lets a safe-shaped non-allowlisted name pass -> the privacy test
+  asserting the pseudonym.
+- P5 reserved-name spoof: `main`/`custom`/`unknown` as a SOURCE value is passed through instead of
+  pseudonymized -> the reserved-collision test.
+- P6 local-name guard removed (an allowlisted hostname-shaped name passes) -> the local-name test.
+- P7 state-load re-sanitization removed (a revoked custom name survives in state) -> the delta test for
+  Fix A.
+- P8 sidecar bound/guard removed (oversized or non-`subagents` path still read) -> the sidecar test.
+- P9 replay rewrites stored enrichment (a duplicate `cc-` id changes a row) -> the duplicate-idempotency
+  test.
+Complexity:
+- P10 cache-read and cache-creation dropped from the score input -> the test asserting tier from total
+  input.
+- P11 output usage enters the score -> the test asserting score is independent of output tokens.
+- P12 a threshold boundary is off by one -> the boundary-vector test.
+- P13 malformed usage becomes tier 1 instead of unscored -> the test asserting `complexity is None`.
+Backend ingest / storage:
+- P14 `_clean_agent` accepts an invalid shape (echoes an unsafe value) -> the ingest-validation test.
+- P15 the `agent` field is dropped from the insert -> the ingest round-trip test.
+- P16 v13 migration / rollback guard bypassed -> the migration v13 test.
+Task derivation / read side:
+- P17 task method hard-coded to `request-shape-v1` (ignores the actual method) -> the task start-method
+  test.
+- P18 task agent copied from the parent instead of derived from counted events -> the task-agent test.
+- P19 evaluator / invalid-attribution exclusion removed -> the analytics exclusion test.
+- P20 unpriced calls reported as priced 0.0 instead of NULL -> the unpriced-never-zero test.
+- P21 missing latency treated as 0 instead of NULL with denominator -> the latency test.
+- P22 global `tasks` computed as the sum of cell tasks -> the distinct-task test.
+- P23 unknown agent/complexity rows dropped from totals -> the coverage test.
+Export:
+- P24 the new method omitted from export -> the export method test.
+- P25 snapshot task label reads later live events -> the snapshot-isolation test.
+
+If a control has no test that can go red, mark it SURVIVED and name the test you expected to exist. Do not
+invent tests. Do not modify assertions.
+
+HOW TO WORK
+- Read the files and the tests first; map each control to a real test id. If a listed control does not
+  exist in this code, say so instead of forcing it.
+- Do not commit, do not push, do not `git reset`/`checkout`/`stash`. Restore every mutation yourself.
+- Final report: a markdown table `id | target file | break | test id | caught/survived | failing assertion`.
+  Then a one-line summary `X/Y caught`. Keep it inside the log; do not write product files.

@@ -20,7 +20,7 @@ from sqlalchemy import text
 
 from redaction import REDACTION_VERSION, scrub_text
 
-APPROVED_METHODS = frozenset({"request-shape-v1"})
+APPROVED_METHODS = frozenset({"request-shape-v1", "cc-input-size-v1"})
 # Eligibility marker set by the producer only on an authorized root prompt (O10 F1).
 PROMPT_ELIGIBILITY = "v1-allowed"
 SESSION_END_REASONS = ("end", "shutdown", "session_boundary", "new_session")
@@ -70,8 +70,9 @@ def start_complexity_candidate(
     """The one candidate rule for backfill and ingest; returns the method to store, or None."""
     if event_type != "llm_request" or complexity is None:
         return None
-    if complexity_method_of(complexity_method, tags_json) in APPROVED_METHODS:
-        return "request-shape-v1"
+    method = complexity_method_of(complexity_method, tags_json)
+    if method in APPROVED_METHODS:
+        return method
     return None
 
 

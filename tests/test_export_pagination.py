@@ -44,7 +44,8 @@ async def test_pages_concatenate_to_full_result(client):
 
 
 async def test_pagination_under_concurrent_ingest(client):
-    await post(client, *(ev(f"a{i}", turn=f"t{i}", at=_at(i)) for i in range(5)))
+    await post(client, *(ev(f"a{i}", turn=f"t{i}", at=_at(i), agent="main", complexity=1,
+                            complexity_method="cc-input-size-v1") for i in range(5)))
     page1 = await export(client, "events", limit=2)
     tasks1 = await export(client, "tasks", limit=2)
     page1_refs = {task["task_ref"] for task in tasks1["items"]}
@@ -53,7 +54,8 @@ async def test_pagination_under_concurrent_ingest(client):
     await post(client,
                ev("new-in-period", turn="n1", at="2026-09-20T00:00:00Z"),        # (a) new event in the period
                ev("late-old-time", turn="n2", at="2026-09-01T00:00:01Z"),        # (b) late event, old occurred_at
-               ev("same-task", turn=target_turn, at="2026-09-02T00:00:00Z", prompt_tokens=1000))  # (c) later page
+               ev("same-task", turn=target_turn, at="2026-09-02T00:00:00Z", prompt_tokens=1000,
+                  agent="unknown", complexity=2, complexity_method="cc-input-size-v1"))  # (c) later page
     rest = await walk_from(client, "events", page1)
     ids = [i["client_event_id"] for i in page1["items"] + rest]
     assert sorted(ids) == sorted(f"a{i}" for i in range(5))
@@ -61,6 +63,8 @@ async def test_pagination_under_concurrent_ingest(client):
     assert sum(t["prompt_tokens"] for t in tasks1["items"] + task_rest) == 50  # sums unchanged within the chain
     target = next(task for task in task_rest if task["task_ref"] == target_ref)
     assert (target["llm_request_count"], target["prompt_tokens"], target["completion_tokens"]) == (1, 10, 5)
+    assert (target["agent"], target["agent_conflict"], target["agent_unavailable_calls"]) == ("main", False, 0)
+    assert (target["start_complexity"], target["start_complexity_method"]) == (1, "cc-input-size-v1")
     fresh, _ = await walk(client, "events")
     assert {"new-in-period", "late-old-time", "same-task"} <= {i["client_event_id"] for i in fresh}
 

@@ -35,6 +35,7 @@ class Record:
     request_id: Optional[str]
     model: Any
     usage: dict[str, int]
+    usage_valid: bool
     stop_reason: Any
     timestamp: Any
     tool_use_count: int
@@ -109,6 +110,7 @@ def _record(group: _Group, key: Optional[str], agent_fallback: Optional[str], su
     d = group.line
     msg = d.get("message") or {}
     usage = msg.get("usage") or {}
+    input_fields = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
     return Record(
         message_id=group.mid,
         request_id=d.get("requestId") if isinstance(d.get("requestId"), str) else None,
@@ -119,6 +121,7 @@ def _record(group: _Group, key: Optional[str], agent_fallback: Optional[str], su
             "cache_creation_input_tokens": _int(usage.get("cache_creation_input_tokens")),
             "output_tokens": _int(usage.get("output_tokens")),
         },
+        usage_valid=all(type(usage.get(name)) is int and usage[name] >= 0 for name in input_fields),
         stop_reason=msg.get("stop_reason"),
         timestamp=d.get("timestamp"),
         tool_use_count=len(group.tool_ids) + group.tool_blocks,

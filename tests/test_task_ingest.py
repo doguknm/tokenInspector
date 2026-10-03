@@ -116,6 +116,19 @@ async def test_non_approved_methods_are_never_chosen_at_ingest(client):
     assert (task["start_complexity"], task["start_complexity_method"]) == (2, "request-shape-v1")
 
 
+async def test_cc_start_complexity_uses_its_own_method_and_earliest_llm(client):
+    await _post(
+        client,
+        _ev("late", occurred_at=_ts(30), complexity=4, complexity_method="cc-input-size-v1"),
+        _ev("tool", occurred_at=_ts(1), event_type="tool_call", complexity=5,
+            complexity_method="cc-input-size-v1"),
+        _ev("early", occurred_at=_ts(5), complexity=2, complexity_method="cc-input-size-v1"),
+    )
+    (task,) = await _tasks()
+    assert (task["start_complexity"], task["start_complexity_method"], task["start_complexity_event_at"]) == (
+        2, "cc-input-size-v1", _ts(5))
+
+
 # --- AC10a / AC10d -------------------------------------------------------------------
 
 

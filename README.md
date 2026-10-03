@@ -40,8 +40,8 @@ Apply it with `systemctl --user daemon-reload && systemctl --user restart token-
 | Overview | Stat cards (input, cache read, cache write and output tokens shown separately, plus their labelled sum), daily stacked token-type bars with a cost line, top models by cost, per-project table with one column per token type |
 | Projects | Separates bounded Git repository inventory (including repositories with zero events) from event-backed observed activity; select either identity for filtered analytics |
 | Models | Cross-project latency bar chart, cost comparison table |
-| Complexity | Per-call `request-shape-v1` tier (1–5), filterable by project, model, method and 7/30/90 days: a calls/tasks/tokens/cost-per-tier chart split by model, a per-tier volume table (calls, tasks, input / cache read / cache write / output with per-call and per-task averages) and a tier × model table (per-task and per-call tokens, latency, TTFT, error rate, priced cost per task with unpriced calls shown, completion counts, low-sample and lowest-cost/latency marks); routing recommendations table |
-| Tasks | One row per task (a Hermes turn): request-shape-v1 start complexity, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state; a start-complexity vs JEV scatter; a detail panel with probabilities, child tasks and evaluations. Never shows prompt text |
+| Complexity | Per-call complexity by method. Hermes uses `request-shape-v1`; Claude Code uses the separate, non-comparable `cc-input-size-v1` input-size tier. Existing charts remain method-filtered; this data-layer change does not add an Agents dashboard tab |
+| Tasks | One row per task (a turn): method-qualified start complexity plus a derived sanitized agent label/conflict/missing-call summary, JEV difficulty and confidence, tokens, cost, tools, wall time, completion and prompt state. Never shows prompt text |
 | Jobs | One row per launcher job (`job_ref`), filterable by runtime, work type and 7/30/90 days: work type, runtime, projects, tasks, calls, the four token types and their sum, priced cost with the unpriced count (never `$0`), estimated cost, first/last event (not job duration), attempts and conflicts (calls / tasks); an anomaly line for job conflicts and invalid attribution. Below the table, **Export (v1)** downloads jobs, tasks or LLM calls for a UTC date range as CSV (built in the browser from the JSON export, same fields, formula-injection guarded) and links the JSON first page |
 | Settings | Edit/add/delete pricing rules (USD per 1M tokens) |
 
@@ -127,7 +127,7 @@ python scripts/repair_task_parents.py --db "$DB_PATH" --apply    # verified onli
 
 `--backup-dir DIR` puts the backup elsewhere (default: next to the DB, `<db>.bak-repair-<UTC stamp>`). Output is one count per class, never refs or names.
 
-**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 11` (or `--to 10`; service stopped; exact source-version guard, SQLite ≥ 3.35). `--to 11` runs `scripts/rollback_v12.sql`; `--to 10` runs it and then `scripts/rollback_v11.sql`, one step per transaction. The runner names the app commit to start afterwards.
+**Schema rollback** goes only through `python scripts/rollback_schema.py --db "$DB_PATH" --to 12` (or an older registered target; service stopped; exact source-version guard, SQLite ≥ 3.35). Schema v13 rolls back through `scripts/rollback_v13.sql`, one step per transaction.
 
 ## Versioned read-only export (O9, schema v12)
 
@@ -148,6 +148,11 @@ curl -s "http://127.0.0.1:8100/api/export/v1/events?from=2026-09-01T00:00:00Z&to
 ## Claude Code producer
 
 `producers/claude_code/` is a stdlib-only Claude Code hook (`Stop`, `SubagentStop`, `SessionEnd`) that sends one `llm_request` event per API call from the session transcript: allowlisted metadata only, never prompt or response text, tool data or paths. It is bounded to 5 s per hook, fail-open, and at-least-once with idempotent `cc-` event ids that are unique across projects ([ADR-004](docs/adr/004-cross-source-dedup-authority.md)). Install, configuration, sent fields and limits: [producers/claude_code/README.md](producers/claude_code/README.md).
+
+Schema v13 adds deploy-onward Claude Code call data: a sanitized agent label in the `agent` column and
+`cc-input-size-v1`, computed from input plus cache-read plus cache-creation tokens. `GET /api/analytics/agents`
+provides the bounded UTC-range read contract. Historic calls are not backfilled, and unverifiable drains are
+labelled `unknown`; named labels are not guaranteed for every run. This is API/data support only, not an Agents tab.
 
 > **Status:** installed on Windows and on hermes since 2026-10-03 (O9 deploy). `install.py` defaults to a content-free dry-run summary; `--apply` / `--uninstall --apply` change the global `~/.claude/settings.json` and are user-approved steps. On Windows the producer URL lives in `~/.config/token-inspector/claude-code.json` (never in repo files).
 

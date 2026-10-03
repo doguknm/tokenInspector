@@ -100,6 +100,7 @@ class TokenEvent(SQLModel, table=True):
     request_file_ref_count: Optional[int] = None
     request_tool_names_json: Optional[str] = None
     ingest_seq: Optional[int] = None
+    agent: Optional[str] = Field(default=None, max_length=64)
 
 
 class Task(SQLModel, table=True):

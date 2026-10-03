@@ -71,9 +71,9 @@ Backend unavailability must never break the caller. Backend validation failures 
 | `scripts/rollback_v10.sql`, `scripts/check_v9_app_on_v10.py` | schema rollback and code-only rollback check |
 | `routes/jobs.py` | `GET /api/jobs`: cost per launcher job (read-only, no auth) |
 | `scripts/repair_task_parents.py` | stdlib-only re-link of pre-O9 cross-project child tasks; dry-run default, verified backup before `--apply`, counts only |
-| `scripts/rollback_schema.py`, `scripts/rollback_v12.sql`, `scripts/rollback_v11.sql` | the only supported schema rollback (v12 → v11 → v10, one step per transaction): exact source-version guard, SQLite ≥ 3.35 |
+| `scripts/rollback_schema.py`, `scripts/rollback_v13.sql`, `scripts/rollback_v12.sql`, `scripts/rollback_v11.sql` | the only supported schema rollback (v13 → v12 → v11 → v10, one step per transaction): exact source-version guard, SQLite ≥ 3.35 |
 | `routes/export.py` | `GET /api/export/v1/{jobs,tasks,events}`: versioned read-only export (snapshot by `ingest_seq`, field and value allowlists, static errors); contract `docs/export-contract-v1.md`, ADR-005 |
-| `producers/claude_code/` | stdlib-only Claude Code hook producer: `cc_hook.py` (entry, watchdog, fail-open), `cc_transcript.py` (reader, group finality), `cc_events.py` (allowlisted mapping, `cc-` ids), `cc_attribution.py`, `cc_config.py` (URL, token, aliases, job env), `cc_state.py` (cursor, locks, counters), `cc_client.py` (batch POST, `valid_ack`), `install.py` (settings.json installer) |
+| `producers/claude_code/` | stdlib-only Claude Code hook producer: `cc_hook.py` (entry, watchdog, fail-open), `cc_transcript.py` (reader, group finality), `cc_events.py` (allowlisted mapping, `cc-` ids), `cc_agent.py` (sanitized run-local label and bounded sidecar reader), `cc_complexity.py` (`cc-input-size-v1`), `cc_attribution.py`, `cc_config.py`, `cc_state.py`, `cc_client.py`, `install.py` |
 | `static/` | dashboard shell, charts, tables, styles (Tasks view included) |
 | `tests/` | ingest, idempotency, pricing, analytics, inventory, migration, tasks, retention, JEV, pilot, jobs, repair, Claude Code producer (`test_cc_*.py`, `test_dedup_authority.py`), export (`test_export_*.py`, `test_migration_v12.py`, `test_docs_export.py`) regressions |
 | `tests/browser/` | Playwright suite (marker `browser`; skipped without Playwright) |
@@ -156,11 +156,15 @@ Cache pricing has independent rates. Reasoning tokens may already be represented
 
 ## Complexity
 
-Primary path:
+Hermes request-shape path:
 
 ```text
 request-shape-v1
 ```
+
+Claude Code calls use the separate numeric `cc-input-size-v1` method, based only on input plus cache-read
+plus cache-creation tokens. The two methods measure different evidence and must not be compared as if their
+tiers were interchangeable.
 
 It uses numeric request metadata: current user-message length, message count, and approximate input token count. It does not claim semantic difficulty and does not require raw prompt storage. Analytics includes unpriced observations in token averages; cost averages remain null without priced observations.
 
@@ -310,3 +314,5 @@ Restarting the backend is separate from restarting Hermes. A plugin reinstall re
 - `GET /api/tasks?allowed_only=true` binds the allowlist names as SQL parameters; they show up only in the aiosqlite DEBUG driver log (off in production), never in application logs.
 - Prompt tests after O10 must take the allowed path: list the project, send `task_hierarchy="root"` and `prompt_eligibility="v1-allowed"` (backend), or call `_on_session_start` and pass the attach authorization (plugin). JEV test rows must be `root`.
 - `hermes -z` ends with `os._exit` (`hermes_cli/main.py` `_run_and_exit_oneshot`), which skips the plugin's `atexit` flush and `on_session_finalize`: a job loses the events of its last flush interval (~2 s), and a job that short shows only its `session` event and is missing from `/api/jobs`. Verify job tagging with a job of several tool steps (O9 status O14).
+- Agent identity is a nullable `token_events.agent` column, never a tag. Task agent fields are derived from
+  that task's counted LLM calls; they are not copied from a parent task or stored on `tasks`.

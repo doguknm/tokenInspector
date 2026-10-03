@@ -1,0 +1,88 @@
+CP2 DELTA FIX — Claude Code agent identity, state-load policy and sidecar layout
+
+REPO: this is the Token Inspector backend checkout (branch `feat/cc-agent-usage`) at its CP2-integrated
+state: the agent-identity and `cc-input-size-v1` work has already been implemented here (schema v13, the
+producer `cc_agent.py` / `cc_complexity.py`, the read endpoint, the export fields, new tests). Your job is
+a SMALL, SURGICAL delta: fix two concrete defects in the producer and add the two tests that would have
+caught them. Change nothing else. No commit, no push — leave the changes in the working tree.
+
+The producer is `producers/claude_code/`. It must remain **stdlib-only** and fail-open, with its 5-second
+hook bound unchanged. Never send or persist prompt/response text, tool arguments or results, raw ids,
+paths, hostnames or the tailnet name. Agent names follow the existing default-deny rule (a custom name
+passes only under `allowlist` mode as an exact allowlist member, never a detected local identifier;
+otherwise a stable `a-<sha256[:16]>` pseudonym, or `unknown`).
+
+=== FIX A — the agent-name policy is not re-applied on the state-load path ===
+
+Today `producers/claude_code/cc_state.py::load` already runs `_valid_ctx`, but `_valid_ctx` only checks the
+agent block's SHAPE (`_AGENT_RE`, `agent_source` membership, run-key shape, policy version). It does not
+re-apply the custom-name rule. So a label that was accepted when it was resolved (mode `allowlist`, exact
+allowlist member) survives in state even after the operator revokes the allowlist, and a later drain sends
+that now-denied name. The plan requires the rule at **state load** as well as resolution
+(`cc-agent-complexity-plan.md`, A4 step 7: "Apply the rule at producer resolution, state load, ingest, and
+read/export serialization").
+
+Fix: import `cc_agent` in `cc_state.py` and, inside `_valid_ctx`, after the shape check passes, run the
+stored label back through `cc_agent.sanitize(...)` with the CURRENT config, and store the sanitized result:
+
+- `mode` = `TOKEN_INSPECTOR_AGENT_NAME_MODE` (or file `agent_name_mode`), defaulting to `"deny"` when
+  absent/invalid — read it the same way `cc_config` documents, but do NOT import `cc_config` from
+  `cc_state` if that would create a cycle; if a cycle appears, read the two values locally in `cc_state`
+  with a tiny helper that mirrors `cc_config`'s rule (env overrides file; only `deny`/`allowlist`;
+  allowlist = a JSON array of strings, non-strings dropped).
+- `allowlist` = the resolved allowlist tuple.
+- `local_names` = a detected-local-identifier set. `cc_attribution` already exposes `local_names()`
+  (hostname/FQDN/IPv4-shaped candidates); import it lazily inside the function to keep module load light.
+- The `sanitize` call must be applied ONLY to labels that could be custom. Producer-structural labels must
+  keep their meaning: `main` stays `main`, `unknown` stays `unknown`, and a `main`/`custom`/`unknown`
+  agent_source (`main` source) is unchanged. `general-purpose`, `fork`, a plugin-shaped `<plugin>:<agent>`
+  that is an allowlist member, an `a-<hash>` pseudonym, or an allowlisted safe custom name all pass
+  through `sanitize` unchanged when the policy still permits them; a custom name whose allowlist entry was
+  revoked must come back as its `a-<hash>` pseudonym.
+- If re-sanitization changes the value, store the NEW value; the rest of the context is untouched. A
+  malformed or missing agent block still drops the whole block, as today.
+
+`sanitize` is pure and stdlib-only, so this adds no I/O and no new bound.
+
+=== FIX B — the sidecar path is read for the wrong layout ===
+
+The real on-disk layout is `<session-dir>/subagents/agent-<id>.jsonl` with a sibling
+`<session-dir>/subagents/agent-<id>.meta.json` — the `subagents` directory sits directly under the session
+file's directory (the session transcript is `<session-dir>.jsonl`), NOT under a directory named after the
+session stem. Verify this in `producers/claude_code/cc_transcript.py` / `cc_hook.py` against how the
+subagent transcript path is actually constructed, then make `cc_agent.read_sidecar_agent_type(path)` work
+for the real layout:
+
+- From the subagent transcript path, look for the sidecar at `Path(path).with_suffix(".meta.json")`; if
+  that sibling does not exist, walk UP from the transcript's parent directory to the session root and try
+  `<candidate>/subagents/agent-<id>.meta.json` at each level, so BOTH `.../<x>/subagents/agent-1.jsonl`
+  and any deeper nesting are covered. Stop at the filesystem root or after a small fixed number of levels
+  (<= 8) — this is a bounded local read inside the existing hook budget.
+- Keep every existing guard: only read when the parent directory is named `subagents` and the file name
+  starts with `agent-`; refuse a sidecar larger than 64 KiB; parse JSON and keep only the `agentType`
+  string; never raise, never return the `description` or any other key.
+- Do not read any other file.
+
+=== TESTS (add these; do not weaken an existing assertion) ===
+
+1. In `tests/test_cc_agent.py` (or `tests/test_cc_state_client.py` if it fits the state round-trip better):
+   a state file whose stored agent block holds an allowlisted custom name is loaded under mode `deny` (or
+   under an allowlist that no longer contains it) and the loaded `ctx["agent"]` is the `a-<hash>` pseudonym
+   of the original value, never the raw name. Also assert the raw name is absent from the state bytes after
+   a re-save.
+2. In `tests/test_cc_agent.py`: `read_sidecar_agent_type` finds the sibling `.meta.json` for the real
+   `subagents/agent-<id>.jsonl` layout (build the tree with `tmp_path`) and returns its `agentType`; a
+   missing sidecar, invalid JSON, and an oversized sidecar each return `None`; and no value is returned for
+   a path whose parent is not `subagents`.
+
+=== HOW TO WORK ===
+
+- Read the files before editing; match the existing style exactly.
+- Change only `producers/claude_code/cc_state.py`, `producers/claude_code/cc_agent.py`, and the test files.
+  If a change seems to need a third source file, prefer the smallest possible edit and say so.
+- Run the producer/backend tests and make them pass: use the repo's venv if present
+  (`.venv/bin/python -m pytest -q`), else `python3 -m pytest -q`. At minimum run
+  `tests/test_cc_agent.py tests/test_cc_state_client.py tests/test_cc_hook.py tests/test_cc_privacy.py`.
+- Do NOT commit, do NOT push, do NOT run `git reset`/`git checkout`/`git stash`, do NOT delete or rewrite
+  the already-applied CP2 code. Leave every change in the working tree.
+- Do not add a model, provider or network call to the producer; it stays stdlib-only and fail-open.

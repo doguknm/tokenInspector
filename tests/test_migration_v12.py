@@ -76,7 +76,7 @@ async def test_m12_fresh_equals_migrated(tmp_path):
     await database.init_db(str(fresh))
     migrated = await _v11_db(tmp_path, UNORDERED)
     await database.init_db(str(migrated))
-    assert _version(fresh) == _version(migrated) == 12 == migrations.LATEST_SCHEMA_VERSION
+    assert _version(fresh) == _version(migrated) == 13 == migrations.LATEST_SCHEMA_VERSION
     for table in ("tasks", "token_events", "export_state"):
         assert _columns(fresh, table) == _columns(migrated, table), table
         assert _indexes(fresh, table) == _indexes(migrated, table), table
@@ -84,7 +84,7 @@ async def test_m12_fresh_equals_migrated(tmp_path):
         query = "SELECT sql FROM sqlite_master WHERE name IN ('ux_token_events_ingest_seq', 'export_state') ORDER BY name"
         assert f.execute(query).fetchall() == m.execute(query).fetchall()
     last_seq, revision, epoch = _state(fresh)
-    assert (last_seq, revision) == (0, 0) and re.fullmatch(r"[0-9a-f]{32}", epoch)
+    assert (last_seq, revision) == (0, 1) and re.fullmatch(r"[0-9a-f]{32}", epoch)
     assert _state(migrated)[2] != epoch  # a random epoch per created row
 
 
@@ -93,7 +93,7 @@ async def test_m12_backfill_order(tmp_path):
     path = await _v11_db(tmp_path, UNORDERED)
     await database.init_db(str(path))
     assert _seqs(path) == {"e-early": 1, "e-b": 2, "e-c": 3, "e-late": 4}
-    assert _state(path)[:2] == (4, 0)
+    assert _state(path)[:2] == (4, 1)
     (backup,) = [p for p in tmp_path.glob("v11.db.bak-v11-*") if not p.name.endswith(("-wal", "-shm", "-journal"))]
     migrations.verify_backup(path, backup, 11)
     with closing(sqlite3.connect(path)) as conn:  # the partial unique index enforces distinct sequences
@@ -116,9 +116,9 @@ async def test_null_seq_self_heal_on_startup(tmp_path):
     epoch = _state(path)[2]
     await database.init_db(str(path))
     assert _seqs(path) == {"a": 1, "old-1": 2, "old-2": 3}
-    assert _state(path) == (3, 0, epoch)
+    assert _state(path) == (3, 1, epoch)
     await database.init_db(str(path))  # a second restart changes nothing
-    assert _seqs(path) == {"a": 1, "old-1": 2, "old-2": 3} and _state(path) == (3, 0, epoch)
+    assert _seqs(path) == {"a": 1, "old-1": 2, "old-2": 3} and _state(path) == (3, 1, epoch)
 
 
 async def test_heal_is_atomic(tmp_path, monkeypatch):
@@ -163,19 +163,20 @@ async def test_rollback_runner_guards(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(rollback_schema, "_version", moving)
     assert rollback_schema.main(["--db", str(path), "--to", "11"]) == 1
     monkeypatch.setattr(rollback_schema, "_version", real)
-    assert _version(path) == 12 and "ingest_seq" in [c[1] for c in _columns(path, "token_events")]
+    assert _version(path) == 13 and "ingest_seq" in [c[1] for c in _columns(path, "token_events")]
 
     # SQLite < 3.35 is refused before any write
     monkeypatch.setattr(rollback_schema.sqlite3, "sqlite_version_info", (3, 34, 1))
     assert rollback_schema.main(["--db", str(path), "--to", "11"]) == 1
     monkeypatch.undo()
-    assert _version(path) == 12
+    assert _version(path) == 13
     capsys.readouterr()
 
-    # --to 10 from v12 runs v12 -> 11, then 11 -> 10, in that order
+    # --to 10 from current runs each registered step in order
     assert rollback_schema.main(["--db", str(path), "--to", "10"]) == 0
     out = capsys.readouterr().out
-    assert out.index("12 -> 11") < out.index("11 -> 10") and "LATEST_SCHEMA_VERSION is 10" in out
+    assert out.index("13 -> 12") < out.index("12 -> 11") < out.index("11 -> 10")
+    assert "LATEST_SCHEMA_VERSION is 10" in out
     assert _version(path) == 10
     assert "ingest_seq" not in [c[1] for c in _columns(path, "token_events")] and not _columns(path, "export_state")
 
@@ -193,8 +194,8 @@ async def test_rollback_to_v11_and_reupgrade(tmp_path, capsys):
     with closing(sqlite3.connect(path)) as conn:  # v11 code inserts on the rolled-back DB
         _insert_old_shape(conn, "v11-row", "2026-09-01T00:00:00Z")
         conn.commit()
-    await database.init_db(str(path))  # re-upgrade: v12 again, a new epoch, the v11 row numbered
-    assert _version(path) == 12 and _seqs(path) == {"v11-row": 1}
+    await database.init_db(str(path))  # re-upgrade: current schema, a new epoch, the v11 row numbered
+    assert _version(path) == 13 and _seqs(path) == {"v11-row": 1}
     assert _state(path)[2] != old_epoch
 
 

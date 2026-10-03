@@ -119,6 +119,11 @@ def _host_names() -> set[str]:
     return names
 
 
+def local_names() -> set[str]:
+    """Detected local hostname candidates; values are only used for local rejection."""
+    return _host_names()
+
+
 def _acceptable(name: Optional[str], hosts: set[str]) -> bool:
     return (bool(name) and bool(_NAME_RE.fullmatch(name)) and name not in hosts
             and not _IPV4_RE.fullmatch(name))

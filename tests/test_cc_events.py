@@ -16,9 +16,9 @@ def cc(tmp_path, monkeypatch):
     return modules()
 
 
-def build(cc, record, *, subagent=False, job=None, project="proj"):
+def build(cc, record, *, subagent=False, job=None, project="proj", agent=None):
     return cc["cc_events"].build_event(record, runtime="claude-code@windows", project=project,
-                                       project_source="git_remote", job=job or {}, subagent=subagent)
+                                       project_source="git_remote", job=job or {}, subagent=subagent, agent=agent)
 
 
 def one_record(cc, tmp_path, **call):
@@ -43,6 +43,19 @@ def test_token_mapping_missing_cache_fields(cc, tmp_path):
     t.flush()
     ev = build(cc, cc["cc_transcript"].read_window(str(t.path), 0, None).records[0])
     assert (ev["cache_read_tokens"], ev["cache_creation_tokens"]) == (0, 0)
+    assert "complexity" not in ev and "complexity_method" not in ev
+
+
+def test_agent_and_complexity_are_allowlisted(cc, tmp_path):
+    record = one_record(cc, tmp_path, input_tokens=100, cache_read=4000, cache_create=0)
+    main = build(cc, record, agent="main")
+    child = build(cc, record, agent="a-0123456789abcdef")
+    absent = build(cc, record, agent=None)
+    assert main["agent"] == "main" and child["agent"] == "a-0123456789abcdef"
+    assert "agent" not in absent
+    assert main["complexity"] == 2 and main["complexity_method"] == "cc-input-size-v1"
+    record.raw_agent_id = "raw-secret"
+    assert "raw_agent_id" not in build(cc, record, agent="unknown")
 
 
 def test_client_event_id_from_message_and_request(cc, tmp_path):

@@ -5,7 +5,7 @@
 **Design record:** [ADR-005](adr/005-export-contract.md)
 
 This contract is versioned **separately** from the Token Inspector application version and from the
-database schema version (`/api/meta` `schema_version`, currently 12). The export `schema_version`
+database schema version (`/api/meta` `schema_version`, currently 13). The export `schema_version`
 changes **only on a breaking change** (a removed or renamed field, a changed type or meaning).
 Adding a field is not a breaking change: **consumers must ignore unknown fields.**
 
@@ -161,7 +161,8 @@ They are never collapsed into each other. Units: token counts are integers; cost
 | `tool_call_count` | integer | tool calls requested by the response | `null` when not reported | — |
 | `role` | string | `primary`, `subagent`, `evaluator` (else `other`); `evaluator` appears only for non-excluded events | `null` when none | closed list |
 | `complexity` | integer | deterministic tier 1–5 | `null` when not scored | — |
-| `complexity_method` | string | `request-shape-v1` | **absent** for any other or no method | closed list |
+| `complexity_method` | string | `request-shape-v1` or `cc-input-size-v1` | **absent** for any other or no method | closed list; unknown methods are omitted |
+| `agent` | string | sanitized per-call agent label | `null` when unavailable | `main`, `custom`, `unknown`, safe name, or `a-` pseudonym |
 
 ## Fields: tasks
 
@@ -183,6 +184,11 @@ They are never collapsed into each other. Units: token counts are integers; cost
 | `wall_time_ms` | integer | `last_event_at - first_event_at` (not end-to-end task time) | never absent | — |
 | `completion` | string | how the task ended (live; not success) | never absent | server-derived |
 | `completed_at` | string | completion time (live) | `null` while open | ISO-8601 `Z` |
+| `agent` | string | single distinct agent across the task's counted snapshot calls | `null` when absent or conflicting | agent value rule |
+| `agent_conflict` | boolean | two or more distinct non-null snapshot agent labels | never absent | — |
+| `agent_unavailable_calls` | integer | counted snapshot calls with null agent | never absent | — |
+| `start_complexity` | integer | earliest eligible snapshot call tier | `null` when unscored | 1–5 |
+| `start_complexity_method` | string | method of that earliest eligible call | `null` when unscored | registered method |
 | `llm_request_count` | integer | counted calls | never absent | — |
 | `prompt_tokens`, `completion_tokens`, `cache_read_tokens`, `cache_creation_tokens` | integer | token sums | never absent | — |
 | `priced_count` | integer | priced calls | never absent | — |
@@ -230,6 +236,10 @@ Only these tag keys surface, as top-level fields: `runtime`, `producer`, `job_re
 Prompt text of any kind (raw prompts, task prompts), label notes, legacy `error_message`, tool
 arguments and tool names, `prompt_hash`, `prompt_length`, `user_id_hash`, full `tags`,
 `request_tool_names`, trace and span ids, file paths, hostnames, JEV scores.
+
+Event `agent`, task agent fields and task start-complexity fields are derived only from snapshot events
+(`ingest_seq <= as_of`). Adding these fields is additive and not a breaking export-v1 change. Consumers must
+ignore unknown fields; an unregistered complexity method is omitted rather than emitted as a new value.
 
 ## Value rules and the privacy residual
 

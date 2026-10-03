@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import cc_agent
+
 MAX_STATE_FILES = 512
 MAX_STATE_BYTES = 4096
 TMP_MAX_AGE_S = 3600
@@ -30,6 +32,11 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _JOB_REF_RE = re.compile(r"^(devir-)?[0-9]{8}-[0-9]{6}-[0-9]{1,10}$")
 _WORK_TYPE_RE = re.compile(r"^[a-z0-9]{1,16}$")
 _SOURCES = ("alias", "git_remote", "git_root", "fallback")
+_AGENT_SOURCES = ("main", "hook", "sidecar", "unknown")
+_AGENT_RE = re.compile(
+    r"^(?:main|custom|unknown|general-purpose|fork|a-[0-9a-f]{16}|"
+    r"[A-Za-z][A-Za-z0-9_-]*|[A-Za-z][A-Za-z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*)$"
+)
 
 
 def key_for(path: str) -> str:
@@ -78,6 +85,25 @@ def release(lock: Optional[Path]) -> None:
 
 # ---- state ------------------------------------------------------------------------------------------
 
+def _agent_policy() -> tuple[str, tuple]:
+    try:
+        data = json.loads((Path.home() / ".config" / "token-inspector" / "claude-code.json").read_bytes().decode("utf-8"))
+        file_cfg = data if isinstance(data, dict) else {}
+    except Exception:
+        file_cfg = {}
+    mode = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_MODE", "").strip() or file_cfg.get("agent_name_mode")
+    mode = mode if mode in ("deny", "allowlist") else "deny"
+    raw_allowlist: Any = file_cfg.get("agent_name_allowlist")
+    env_allowlist = os.environ.get("TOKEN_INSPECTOR_AGENT_NAME_ALLOWLIST", "").strip()
+    if env_allowlist:
+        try:
+            raw_allowlist = json.loads(env_allowlist)
+        except Exception:
+            raw_allowlist = []
+    allowlist = tuple(value for value in raw_allowlist if isinstance(value, str)) if isinstance(raw_allowlist, list) else ()
+    return mode, allowlist
+
+
 def _valid_ctx(ctx: Any) -> Optional[dict[str, Any]]:
     if not isinstance(ctx, dict):
         return None
@@ -91,7 +117,22 @@ def _valid_ctx(ctx: Any) -> Optional[dict[str, Any]]:
         clean_job["work_type"] = job["work_type"]
     if type(job.get("job_attempt")) is int and 1 <= job["job_attempt"] <= 9999:
         clean_job["job_attempt"] = job["job_attempt"]
-    return {"project": project, "project_source": source, "job": clean_job}
+    clean = {"project": project, "project_source": source, "job": clean_job}
+    agent_keys = ("agent", "agent_source", "agent_run_key", "agent_policy_version")
+    present = [key in ctx for key in agent_keys]
+    if any(present):
+        agent, agent_source, run_key, version = (ctx.get(key) for key in agent_keys)
+        if (all(present) and isinstance(agent, str) and len(agent) <= 64 and _AGENT_RE.fullmatch(agent)
+                and agent_source in _AGENT_SOURCES and isinstance(run_key, str) and _KEY_RE.fullmatch(run_key)
+                and type(version) is int and version == 1):
+            if agent not in cc_agent.RESERVED:
+                mode, allowlist = _agent_policy()
+                import cc_attribution
+                agent = cc_agent.sanitize(agent, mode=mode, allowlist=allowlist,
+                                          local_names=cc_attribution.local_names())
+            clean.update({"agent": agent, "agent_source": agent_source, "agent_run_key": run_key,
+                          "agent_policy_version": version})
+    return clean
 
 
 def load(state_dir: Path, key: str) -> Optional[dict[str, Any]]:

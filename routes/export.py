@@ -24,7 +24,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from database import get_session
 from jev_scorer import EVALUATOR_PROJECT
-from routes.events import JOB_REF_RE, PRODUCERS, RUNTIMES, WORK_TYPES
+from routes.events import JOB_REF_RE, PRODUCERS, RUNTIMES, WORK_TYPES, _clean_agent
 from routes.jobs import _tag
 from routes.tasks import _completion
 
@@ -44,13 +44,14 @@ EXPORT_FIELDS = {
         "producer", "job_ref", "job_ref_conflict", "work_type", "job_attempt", "occurred_at", "recorded_at",
         "provider", "model", "pricing_model", "status", "error_type", "http_status", *_TOKENS, "reasoning_tokens",
         "cost_status", "cost_usd", "estimated_cost_usd", "process_time_ms", "ttft_ms", "attempt", "retry_count",
-        "tool_call_count", "role", "complexity", "complexity_method",
+        "tool_call_count", "role", "complexity", "complexity_method", "agent",
     ),
     "tasks": (
         "task_ref", "project_name", "session_id", "runtimes", "runtime_inferred", "job_ref", "work_type",
         "work_types", "hierarchy_status", "parent_task_ref", "root_task_ref", "first_event_at", "last_event_at",
         "wall_time_ms", "completion", "completed_at", "llm_request_count", *_TOKENS, *_COST, "conflict_count",
-        "updated_at",
+        "updated_at", "agent", "agent_conflict", "agent_unavailable_calls", "start_complexity",
+        "start_complexity_method",
     ),
     "jobs": (
         "job_ref", "runtimes", "runtime_inferred", "work_type", "work_types", "attempts", "projects", "task_count",
@@ -68,7 +69,7 @@ STATUSES = ("success", "error", "timeout", "cancelled")
 COST_STATUSES = ("priced", "unpriced", "partial", "estimated", "legacy")
 ROLES = ("primary", "subagent", "evaluator")
 HIERARCHY = ("root", "child", "unknown")
-COMPLEXITY_METHODS = ("request-shape-v1",)
+COMPLEXITY_METHODS = ("request-shape-v1", "cc-input-size-v1")
 _ESTIMATED = ("partial", "estimated", "legacy")
 
 
@@ -127,7 +128,7 @@ _EV = f"""ev AS (
            e.model, e.pricing_model, e.status, e.error_type, e.http_status, e.prompt_tokens, e.completion_tokens,
            e.cache_read_tokens, e.cache_creation_tokens, e.reasoning_tokens, e.cost_status, e.estimated_cost_usd,
            e.process_time_ms, e.ttft_ms, e.attempt, e.retry_count, e.tool_call_count, e.role, e.complexity,
-           e.complexity_method, e.ingest_seq,
+           e.complexity_method, e.agent, e.ingest_seq,
            COALESCE(e.occurred_at, e.recorded_at) AS ts,
            t.id AS task_ref,
            {_tag('runtime')} AS runtime, {_tag('producer')} AS producer, {_tag('work_type')} AS work_type,
@@ -152,7 +153,9 @@ _SUMS = f"""
     group_concat(DISTINCT COALESCE(ev.runtime, '{LEGACY_RUNTIME}')) AS runtimes,
     MAX(ev.runtime IS NULL) AS runtime_inferred,
     group_concat(DISTINCT ev.work_type) AS work_types,
-    SUM({_CONFLICT}) AS conflict_count"""
+    SUM({_CONFLICT}) AS conflict_count,
+    COUNT(DISTINCT ev.agent) AS agent_count, MIN(ev.agent) AS agent,
+    SUM(ev.agent IS NULL) AS agent_unavailable_calls"""
 _PERIOD = "{ts} >= :start AND {ts} < :end"
 
 _SQL = {
@@ -161,13 +164,20 @@ SELECT ev.* FROM ev
 WHERE {_PERIOD.format(ts='ev.ts')} AND ev.ingest_seq > :after
 ORDER BY ev.ingest_seq LIMIT :n""",
     # Start-time cohort: tasks whose first snapshot event is in the period; sums over all their snapshot events.
-    "tasks": f"""WITH {_TJ}, {_EV}, ta AS (
+    "tasks": f"""WITH {_TJ}, {_EV}, sc AS (
+    SELECT task_ref, complexity AS start_complexity, complexity_method AS start_complexity_method FROM (
+        SELECT ev.*, ROW_NUMBER() OVER (PARTITION BY task_ref ORDER BY ts, id) AS rn FROM ev
+        WHERE task_ref IS NOT NULL AND complexity IS NOT NULL AND complexity_method IN {COMPLEXITY_METHODS}
+    ) WHERE rn = 1
+), ta AS (
     SELECT ev.task_ref, {_SUMS}
     FROM ev WHERE ev.task_ref IS NOT NULL GROUP BY ev.task_ref
 )
 SELECT ta.*, t.project_name, t.session_id, t.hierarchy_status, t.parent_task_ref, t.root_task_ref,
-       t.completion, t.completed_at, t.last_seen_at, t.updated_at, tj.job AS job
+       t.completion, t.completed_at, t.last_seen_at, t.updated_at, tj.job AS job,
+       sc.start_complexity, sc.start_complexity_method
 FROM ta JOIN tasks t ON t.id = ta.task_ref LEFT JOIN tj ON tj.task_ref = ta.task_ref
+LEFT JOIN sc ON sc.task_ref = ta.task_ref
 WHERE {_PERIOD.format(ts='ta.first_event_at')} AND ta.task_ref > :after
 ORDER BY ta.task_ref LIMIT :n""",
     # Start-time cohort of jobs; an event's job is its task's snapshot job, else its own tag.
@@ -253,6 +263,7 @@ def _event_item(row) -> dict[str, Any]:
         "tool_call_count": row["tool_call_count"],
         "role": _closed(row["role"], ROLES, "other") if row["role"] is not None else None,
         "complexity": row["complexity"],
+        "agent": _clean_agent(row["agent"]),
     })
     if row["complexity_method"] in COMPLEXITY_METHODS:
         item["complexity_method"] = row["complexity_method"]
@@ -313,6 +324,12 @@ def _task_item(row, now: datetime) -> dict[str, Any]:
         **_aggregate(row),
         "conflict_count": int(row["conflict_count"] or 0),
         "updated_at": row["updated_at"],
+        "agent": _clean_agent(row["agent"]) if int(row["agent_count"] or 0) == 1 else None,
+        "agent_conflict": int(row["agent_count"] or 0) >= 2,
+        "agent_unavailable_calls": int(row["agent_unavailable_calls"] or 0),
+        "start_complexity": row["start_complexity"],
+        "start_complexity_method": (row["start_complexity_method"]
+                                    if row["start_complexity_method"] in COMPLEXITY_METHODS else None),
     })
     return item
 
