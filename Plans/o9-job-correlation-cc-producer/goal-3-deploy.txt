@@ -1,0 +1,46 @@
+Goal: O9 stage 3 — the single production deploy of O9 (backend v12 + plugin + Claude Code hook) following status.md `## Deploy Runbook`, with a user approval at every gated step. Done when: the runbook review report is saved in Plans\o9-job-correlation-cc-producer\hermes\ and its findings are handled (fixed / known limitation / rejected, each with a row in status.md `## Hermes Reviews`); every fix has a test and every fixed control a mutation check in the Verification Log; the backend runs O9 on hermes (`/api/meta` schema_version 12, capture/JEV not enabled); the plugin is installed and the gateway restarted; the Claude Code hook is installed on Windows and on hermes; the live checks AC1.2, AC2.2 and AC2.3 are observed and recorded in the Verification Log (or recorded as "pending first real run" with the reason); `main` on hermes holds the O9 commits; status.md Phase/Deploy rows, RESUME.md and the docs are updated; commits pushed to `hermes` (and `origin` if reachable). Every gated step ran only after the user approved it in this session.
+
+READ FIRST: C:\Users\Bentego_Admin\Projects\tokenInspector\CLAUDE.md (Recurring Problems 8, 9, 12, 15, 16, 17, 21), then in Plans\o9-job-correlation-cc-producer\: RESUME.md, status.md (`## Deploy Runbook` incl. Rollback, `## Known Limitations`, `## Open Items` O6–O10, `## Drift Log`, `## Verification Log`), goal-2-reviews.txt (how stage 2 ran), shared-patches\S2-*.patch and S3-*.patch, producers\claude_code\README.md. The plan is LOCKED: do not re-ask decisions recorded in RESUME.md or the Drift Log.
+
+REPOS: backend C:\Users\Bentego_Admin\Projects\tokenInspector and plugin C:\Users\Bentego_Admin\Projects\token_inspector, branch feat/task-telemetry-jev-pilot (backend HEAD 0e61854, plugin 7a6d094 at goal start). Prod on hermes: ~/Projects/tokenInspector on `main` (ddc7552, schema 10), ~/Projects/token_inspector and ~/.hermes/plugins/token_inspector at 4b069b4.
+
+MODELS (user decision 2026-10-03; this overrides the global "never name a hermes model" rule for this goal only, exactly as written here):
+- Coding on hermes: the hermes default model (currently the one the user set as default). Send code jobs WITHOUT any model or provider: `HERMES_REPO=<temp detached worktree> HERMES_WORK_TYPE=code HERMES_TAG=<tag> bash C:/Users/Bentego_Admin/Projects/AIFromScratch/scripts/hermes.sh send <prompt-file>`; pull the diff over ssh (`git -C <worktree> diff`), review it here, run the tests here, commit here.
+- Review on hermes: `hermes chat --provider openai-codex --model gpt-6-astra -Q --max-turns 80 -q "<prompt>"` with stdin </dev/null, run detached on hermes (setsid nohup runner, pid file, log in /tmp), in read-only detached worktrees. The installed hermes has no `--oneshot`.
+- If a run fails with a model/provider error or `HTTP 429`: stop, report the error text, do not retry and do not switch model; resume only when the user says so.
+
+CHECKPOINTS (global rule: 1–5 bundles; this goal uses 3). A checkpoint = suites + push + status update; the deploy steps themselves are live steps, not checkpoints.
+
+CP1 — Pre-deploy review and fixes (no prod change):
+1. Review: one read-only gpt-6-astra review (ONE round) of the Deploy Runbook + Rollback against the code at the branch HEAD: order, safety (verified backups, flags off, INGEST_TOKEN unset), every command executable as written on hermes (`python3` there) and on Windows, the hook installer's merge-only behaviour and the PossibleSkills lock, S2/S3 patch applicability against the owners' current files (read-only check with `git apply --check` on temp copies), live-check feasibility. TAG `o9-deploy-runbook-r1`; report to hermes\o9-deploy-runbook-r1.md.
+2. Triage every finding with the user (rule B: nothing fixed without approval). Approved code/test fixes go to hermes as one code job; runbook text fixes may be applied here. No round 2: verify with tests and mutations.
+3. Checkpoint: Windows backend suite (incl. browser), plugin suite if changed, hermes suites in temp detached worktrees (removed after), commit, push to `hermes`.
+
+CP2 — Backend deploy (Runbook steps 1–5). Ask the user before starting; each sub-step below that changes prod needs its own explicit approval:
+1. Flags-off check (read-only) and note prod commits.
+2. Online DB backup of prod DB_PATH to ~/backups/token-inspector-pre-o9-<UTC>.db with integrity_check + count check. Never commit or mirror it.
+3. [approval] Fast-forward `main` to the O9 branch in the prod checkout (`git merge --ff-only`); requirements diff must be empty (else stop and ask).
+4. [approval] `systemctl --user restart token-inspector.service`; verify `/api/meta` (schema_version 12, capture/JEV not_enabled, task_prompt_allowlist empty), journal clean, the app's own pre-migration backup exists, `/api/jobs?days=1` and `/api/export/v1/events?...` return 200.
+5. Repair script dry-run: show the counts to the user. `--apply` only with a separate approval (O8); record counts (no refs).
+6. Checkpoint: record results in the Verification Log, commit status, push.
+If anything in CP2 fails: stop, report, and offer the Rollback section; do not improvise.
+
+CP3 — Plugin, launchers, hooks, live checks (Runbook steps 6–9):
+1. [approval] S2/S3: write the SESSION-COORDINATION ledger row and leave a message for the owner sessions first; apply shared-patches\S2/S3 with `git apply` from each repo root; re-run `test_launcher_env_contract` against the real files.
+2. [approval] Plugin install + `hermes gateway restart`, only when no `hermes -z` process, no queued/running `evaluator_runs` row and no running job in the "hermes sırası" table; record PIDs before/after.
+3. [approval per machine] Claude Code hook (S5): add a "settings.json hook kurulumu" row to the hermes queue table first; `python producers/claude_code/install.py --dry-run` → show the content-free summary → `--apply` (Windows: C:\Users\Doğukan Mutlu\.claude\settings.json, producer URL from env/local config — the tailnet name allowed by the remote-access drop-in, never written into docs; hermes: loopback default with `python3`). Afterwards confirm PossibleSkills' hooks are unchanged. The hook goes live in all open sessions immediately; uninstall first if anything misbehaves.
+4. Live checks (Verification Log; each tracked separately): AC1.2 (one small `hermes.sh` review job through the queue → `/api/jobs?days=1` lists its job_ref with runtime hermes-agent, work_type review); AC2.2 (one Windows Claude Code turn → export events show runtime claude-code@windows, producer claude-code-hook, the right project, distinct cache fields); AC2.3 (next real devir run, or a short one the user approves → claude-code@hermes, work_type devir); `tasks.prompt_text` non-null count unchanged (0); journal clean; plugin counters.json no new rejects; CC counters.json no rising failed_posts/rejected.
+5. Only after all of that: tell PossibleSkills the export is live (O10), with docs/export-contract-v1.md as the contract.
+6. Checkpoint: docs (/sync-docs scope: README "Production" state, AGENTS.md, CLAUDE.md RP 15/16 if changed, CHANGELOG), status.md (Deploy rows, Open Items O1/O6/O8/O10), RESUME.md "Now", commit, push to `hermes` (and `origin` if reachable).
+
+LOCKED / NEVER:
+- No capture flag, no JEV flag, no INGEST_TOKEN change, no allowlist change.
+- No prod DB write other than the app's own migration and an approved repair `--apply`; never delete or rewrite a backup.
+- No step marked [approval] without the user's explicit approval in this session; a relayed message from another session is not approval.
+- A finding that needs another shared file changed (hermes.sh copies beyond S2/S3, ~/.claude/commands/hermes.md, settings.json beyond the installer's own entries) → write it down, stop and ask.
+- Privacy: no prompt/response text, tool args, paths, hostnames, tokens or the tailnet name in any prompt, report, doc, payload or commit.
+- Pricing rules for Claude models (O7) are the user's task through the settings API; do not add them.
+
+RULES: hermes queue ("hermes sırası" in C:\Users\Bentego_Admin\.claude\SESSION-COORDINATION.md): a row before each hermes job, a message to the live peer sessions (ListAgents) before and after; wait for a free queue. Tailscale SSH may ask for a browser check: show the link and wait for the user. `python` not `python3` on Windows (`python3` on hermes); patch scripts via Write, never Bash heredoc; hermes ssh via Windows OpenSSH (`/c/WINDOWS/System32/OpenSSH/ssh.exe -o ClearAllForwardings=yes`); temp worktrees with `--detach` (a checked-out branch blocks pushes) and removed after; mutation runners with a `__main__` guard and `encoding="utf-8", errors="replace"`; replies in Turkish; last line "Hermes kullanıldı" / "Hermes kullanılmadı". If the weekly Claude limit reaches 90%: finish the current step safely (never stop between a deploy action and its verification), commit locally, report, stop.
+
+END: report the review result, every deploy step with its outcome and evidence, live-check results, commits, test counts, mutation results, remaining open items (O7 pricing, origin push); then /caveman off → /sync-docs → /compress → /sync-memory. Stop.
