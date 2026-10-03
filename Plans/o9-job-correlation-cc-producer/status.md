@@ -422,6 +422,7 @@ Code review r1 and integration fix mutations: **21/21 caught** (RM1–RM21), ori
 | Date | Check | Result |
 |---|---|---|
 | 2026-10-03 | Windows backend suite after the integration fixes (`0aba656`) | **547 passed** (incl. browser) |
+| 2026-10-03 | hermes backend suite at `e998146` (detached temp worktree `/tmp/o9-cp2`, removed; prod checkout on `main`) | **490 passed, 17 skipped** (browser, no Playwright; the two cross-repo fixture comparisons skip because no plugin checkout sits next to this worktree — both ran and passed on Windows and in the plugin suite). Plugin unchanged since `cb56106` (215 passed on hermes, 2026-10-02) |
 | 2026-10-02 | Windows suites after the code-r1 fixes | backend **546 passed** (incl. browser; first run 545 + 1 flaky, see next row); plugin **213 passed, 2 skipped** |
 | 2026-10-02 | Flake `test_truncated_or_replaced_transcript_resets` | 1 of 12 standalone runs failed: the bare `"a3"` check matched inside a random sha256 pseudonym; the check now looks for the quoted JSON string; 15/15 passed (CLAUDE.md RP 21) |
 | 2026-10-02 | hermes code job (worktrees `/tmp/o9-code/`) | backend 491 passed, 15 skipped (`-m "not browser"`); plugin 215 passed — before the RM16 test strengthening and the flake fix |
