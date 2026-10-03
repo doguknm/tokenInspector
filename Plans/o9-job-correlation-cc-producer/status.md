@@ -45,7 +45,7 @@ _Tool / model / skill per step come from the execution plan chosen at /new-plan 
 | tests-other | Claude Code (Opus 5.5, direct) | done (P2 CM1–CM37: 37/37; P3 XM1–XM25: 25/25 caught) | Written with each backend step; mutation checks PJ*/BJ* (Phase 1), CM* (Phase 2), XM* (Phase 3). Suites locally and on hermes at every checkpoint |
 | tests-e2e | Claude Code (Opus 5.5, direct) | done (P1 `e1cab32`; P3 `be86f18`, FM2–FM3, FM5–FM7: 5/5 caught) | Playwright `-m browser`, own module-scoped servers; Phase 1 Jobs view, Phase 3 CSV download; mutations FM1–FM3. Run after the frontend work of the phase |
 | hermes-review | Hermes (driven by Claude Code) | done (r1, 10 parts, 32 findings: 25 fixed, 7 known limitation; `f1ad51d`, `8de894f`, `006451d` / plugin `cb56106`) | After all three phases and tests-e2e, before review — spec in `## Hermes Code Review` (spec written at plan lock) |
-| review | Claude Code (Opus 5.5, direct) | not started | Run last — full integration review (AC → test map across both repos, cross-repo contracts: env contract, tag keys, `parent_project_name`, attribution vectors, `valid_ack`; Deploy Runbook review) |
+| review | hermes `hermes chat` (model and provider named by the user for this job, 2026-10-02) | done (report `hermes/o9-job-correlation-cc-producer-integration-review.md`; I1, I2, AC1.6 fixed in `0aba656`; 2 known limitations; Drift Log AC-DB1.3 vs AC-DB3.5) | Run last — full integration review (AC → test map across both repos, cross-repo contracts: env contract, tag keys, `parent_project_name`, attribution vectors, `valid_ack`; Deploy Runbook review) |
 
 ## Phase Checkpoints
 _One row per phase. A phase is closed only when every column is filled. Mutation results link to the Verification Log tables._
@@ -195,9 +195,9 @@ _Max 2 rounds per deliverable (plan, code). No round 3. Reports: Plans/o9-job-co
 
 | Finding | Severity | Outcome | Where |
 |---|---|---|---|
-| I1 | MEDIUM | approved fix — pending (hermes code job #69 stopped with `HTTP 429`, no change made): CC producer `work_type` closed list as in the plugin and backend, payload/state canary, ADR-003 wording | `producers/claude_code/cc_config.py` `job_tags()` |
-| I2 | MEDIUM | approved fix — pending (same job): Rollback step 3 as two explicit `rollback_schema.py` commands, run from the O9 checkout before the code moves back | status.md Deploy Runbook, Rollback 3 |
-| GAP AC1.6 | — | approved fix — pending (same job): Jobs browser test asserts attempts, first/last time, estimated cost and distinct non-zero cache cells | `tests/browser/test_jobs_view.py` |
+| I1 | MEDIUM | fixed (`0aba656`; hermes code job #70 after #69 stopped with `HTTP 429`) — CC producer `work_type` closed list as in the plugin and backend, payload/state canary, ADR-003 wording | `producers/claude_code/cc_config.py` `job_tags()`; `test_job_tags_work_type_closed_list`, `test_payload_value_canaries`; RM20 |
+| I2 | MEDIUM | fixed (`0aba656`) — Rollback step 3: two explicit `rollback_schema.py` commands (`python3` on hermes), run from the O9 checkout with the service stopped, before the code moves back | status.md Deploy Runbook, Rollback 3 |
+| GAP AC1.6 | — | fixed (`0aba656`) — Jobs browser test asserts attempts, first/last time, estimated cost and distinct non-zero cache cells | `test_jobs_view_lists_one_row_per_job`; RM21 |
 | GAP AC-DB1.2 | — | known limitation — no migration test on a copy of the demo seed DB | Known Limitations |
 | GAP AC-DB1.3 | — | known limitation (old-code compatibility tested with a hand-written v10-shaped INSERT); the v12 → v10 refusal vs chaining contradiction resolved in the Drift Log (AC-DB3.5 wins) | Known Limitations; Drift Log 2026-10-02 |
 
@@ -414,10 +414,14 @@ Runner: scratchpad `mutate_r1.py` (`__main__` guard, `encoding="utf-8", errors="
 | RM18 | p6-F2 | `cc_hook.py` — `HOOK_BOUND_S` 5 → 60 | caught | `test_production_watchdog_bounds_never_closed_stdin` |
 | RM19 | p9-F3 | `static/app.js` — latest-request generation check removed | caught | `test_jobs_latest_request_wins` (tests/browser/test_jobs_view.py) |
 
-Code review r1 fix mutations: **19/19 caught** (RM1–RM19), originals verified after every run; no code file left modified.
+| RM20 | I1 | `cc_config.py` — any non-empty work type kept | caught | `test_job_tags_work_type_closed_list` (tests/test_cc_events.py) |
+| RM21 | AC1.6 | `static/app.js` — first event cell shows `last_event_at` | caught | `test_jobs_view_lists_one_row_per_job` (tests/browser/test_jobs_view.py) |
+
+Code review r1 and integration fix mutations: **21/21 caught** (RM1–RM21), originals verified after every run; no code file left modified.
 
 | Date | Check | Result |
 |---|---|---|
+| 2026-10-03 | Windows backend suite after the integration fixes (`0aba656`) | **547 passed** (incl. browser) |
 | 2026-10-02 | Windows suites after the code-r1 fixes | backend **546 passed** (incl. browser; first run 545 + 1 flaky, see next row); plugin **213 passed, 2 skipped** |
 | 2026-10-02 | Flake `test_truncated_or_replaced_transcript_resets` | 1 of 12 standalone runs failed: the bare `"a3"` check matched inside a random sha256 pseudonym; the check now looks for the quoted JSON string; 15/15 passed (CLAUDE.md RP 21) |
 | 2026-10-02 | hermes code job (worktrees `/tmp/o9-code/`) | backend 491 passed, 15 skipped (`-m "not browser"`); plugin 215 passed — before the RM16 test strengthening and the flake fix |
